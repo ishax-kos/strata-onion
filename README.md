@@ -1,4 +1,5 @@
 ### Language is in the oven currently! Please be patient!
+It currently does not produce anything runnable.
 
 This is an attempt to make a concrete version of the language.
 Experiments in this version:

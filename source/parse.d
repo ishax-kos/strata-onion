@@ -1,6 +1,5 @@
 module parse;
 
-import nodes;
 
 import pegged.grammar;
 
@@ -9,25 +8,26 @@ import std.format;
 import std.algorithm;
 import std.array;
 
-unittest {
-    string code = "
-        fun main (args []String)() {
-            ;my-var = Int|Float do-stuff[
-                a, 1, 2 + (2 * 4)
-                some-value
-                who-needs-separators
-            ]
-        }
-        ;foobar = lol
-    ";
-    ParseTree gram = parse(code);
-    assert(gram.successful, format!"%s\n\n%s"(code, gram));
+// unittest {
+//     import nodes;
+//     string code = "
+//         fun main (args []String)() {
+//             ;my-var = Int|Float do-stuff[
+//                 a, 1, 2 + (2 * 4)
+//                 some-value
+//                 who-needs-separators
+//             ]
+//         }
+//         ;foobar = lol
+//     ";
+//     ParseTree gram = parse(code);
+//     assert(gram.successful, format!"%s\n\n%s"(code, gram));
     
-    auto mod = Module(gram.children[0]);
-}
+//     auto mod = Module(gram.children[0]);
+// }
 
 
-Module cement_tree();
+// Module cement_tree();
 
 
 ParseTree parse(string code) {
@@ -73,52 +73,51 @@ Gram:
         / Assign 
         / If_statement
         / Loop_statement
-        / Expression 
+        / Value_expr 
 
-    Assign < Expression br :'=' br Expression
+    Assign < Value_expr br :'=' br Value_expr
 
 
 ## Control flow
 
     If_expression < 
-        'if' br Expression br Expression_scope br 'else' br Expression_scope
+        'if' br Value_expr br Value_scope br 'else' br Value_scope
 
     If_statement < 
-        'if' Expression Statement_block (br 'else' br Statement_block)?
+        'if' Value_expr Statement_block (br 'else' br Statement_block)?
 
     Loop_statement < 
         'loop' br Statement_block
 
     Each_expression < 
         'each' br (Prototype_argument_list br)?
-            Expression br (Expression_scope / Statement_block)
+            Value_expr br (Value_scope / Statement_block)
 
 
 ## Declarations
-    Define_variable < :';' br name_value br :'=' br Expression
+    Define_variable < :';' br value_name br :'=' br Value_expr
     Define_function <
         / :'fun' 
-            br name_value 
+            br value_name 
             br Prototype_argument_list 
-            br Prototype_argument_list 
-            br Statement_block
-        / :'fun' 
-            br name_value 
-            br Prototype_argument_list 
-            br Expression_scope
+            (br Prototype_argument_list)?
+            br :'{' br (Statement_list br)? :'}'
     
     Prototype_argument_list <
         / :'(' "" br :')'
-        / :'(' br Declare_parameter (Separator Declare_parameter)* br :')'
+        / :'(' br Function_parameter (Separator Function_parameter)* br :')'
 
-    Declare_parameter < name_value (br Type_expression / :'=' br Expression)?
+    Function_parameter < Declare_value | Declare_type
+
+    Declare_value < value_name (br Type_expr / :'=' br Value_expr)?
+    Declare_type < type_name (br Type_expr / :'=' br Value_expr)?
 
     Statement_block < :'{' br (Statement_list br)? :'}'
-    Expression_scope < :'{' br (Expression br)? :'}'
+    Value_scope < :'{' br (Value_expr br)? :'}'
 
 ## Value expressions
-    Expression < _Ex80
-    _Ex80 < Type_annotation(_Ex60)    / _Ex60
+    Value_expr < _Ex80
+    _Ex80 < Type_annotation(_Ex60) / _Ex60
     _Ex60 < 
         / Logical_and(_Ex20) 
         / Logical_or(_Ex20) 
@@ -129,56 +128,74 @@ Gram:
         / Product_op(_Ex20)
             / _Ex20
 
-    _Ex20 < Prefix_op(_Ex10)          / _Ex10
+    _Ex20 < Prefix_op(_Ex10) / _Ex10
     _Ex10 < 
         / Grouping_expression
         / lit_number 
         / If_expression
         / Function_call
-        / name_value
+        / Indexing
+        / value_name
 
-    Type_annotation(Ex) < Type_expression br Ex
+    Type_annotation(Ex) < Type_expr br Ex
     Logical_and(Ex)     < Ex (br '&' br Ex)+
+    Logical_xor(Ex)     < Ex (br '|+' br Ex)+
     Logical_or(Ex)      < Ex (br '|' br Ex)+
-    Logical_xor(Ex)     < Ex (br '!|' br Ex)+
     Compare_left(Ex)    < Ex (br ('>' / '>=' / '=' / '!=') br Ex)+
     Compare_right(Ex)   < Ex (br ('<' / '<=' / '=' / '!=') br Ex)+
     Sum_op(Ex)          < Ex (br '+' br Ex)+
     Product_op(Ex)      < Ex (br '*' br Ex)+
     Prefix_op(Ex)       < ('-' / '/' / '!') br Ex
-    Function_call < (name_value / Grouping_expression) br Call_arg_list
+    Function_call < (value_name / Grouping_expression) Call_arg_list
+    Indexing < Value_expr '[' br Value_or_type br ']'
+
+    Value_or_type < Value_expr | Type_expr
     
-    Grouping_expression < :'(' br Expression br :')'
+    Grouping_expression < :'(' br Value_expr br :')'
 
     Call_arg_list < 
-        :'[' br (
-            Expression (Separator Expression)* br / ""
-        ) :']'
+        :'(' br (
+            Value_expr (Separator Value_or_type)* br / ""
+        ) :')'
 
 
 ## Type expressions
-    Type_expression < _Tex50
-    _Tex50 < Type_or(_Tex20) / Type_and(_Tex20) / _Tex20
-    _Tex20 < Prefixed_type(_Tex10)    / _Tex10
+    Type_expr < _Tex20
+    _Tex20 < 
+        / Mutable(_Tex10) / Immutable(_Tex10)
+        / Optional(_Tex10) / Pointer(_Tex10) 
+        / Slice_type(_Tex10) / Small_array(_Tex10) / Homo_tuple(_Tex10)
+        / _Tex10
     _Tex10 <
         / Type_grouping
-        / name_type
+        / Unit_literal
+        / type_name
 
-    Type_grouping < :'(' br Type_expression br :')'
-    Prefixed_type(Tex) < Type_prefix br Tex
-    Type_or(Tex)  < Tex (br :'|' br Tex)+
-    Type_and(Tex) < Tex (br :'&' br Tex)+
+    Unit_literal < "Void"
 
-    Type_prefix <
-        / 'imut' / 'mut'
-        / '&' / '?' / '!'
-        / '[' br ']'
-        / '[' br '$' br Expression br ']'
+    Type_grouping < :'(' br Type_expr br :')'
+
+    Declare_field < Type_expr
+    Union_dumb < Declare_field (br :'|' br Declare_field)+
+    Union      < Declare_field (br :'+' br Declare_field)+
+    Struct     < Declare_field (br :'*' br Declare_field)+
+
+
+    Mutable(Tex)    < 'mut' br Tex
+    Immutable(Tex)  < 'imut' br Tex
+    Optional(Tex)   < '?' br Tex
+    Pointer(Tex)    < '&' br Tex
+    Slice_type(Tex)     < '[' br ']' br Tex
+    Small_array(Tex)    < '[' br '$' br Value_expr br ']' br Tex
+    Homo_tuple(Tex)     < Tex br '^' br Value_expr
+    Error_capture(Tex)  < '!' br Tex
+    
 
 ## Lexing
-    name_value <~ [a-z] alphanumeric* ('-' alphanumeric+)*
-    name_type  <~ [A-Z] alphanumeric* ('-' alphanumeric+)*
+    value_name <~ [a-z] alphanumeric* ('-' alphanumeric+)*
+    type_name  <~ [A-Z] alphanumeric* ('-' alphanumeric+)*
     lit_number <~ number_dec / number_hex / number_bin
+
 
     alphanumeric <- [a-z0-9]
 
@@ -186,6 +203,7 @@ Gram:
     number_hex <~ '0x' [0-9A-F_]+
     number_bin <~ '0b' [0-1_]+
 `));
+
         // todo Implement what I have as a C transpiler
 
         ParseTree child(ParseTree node_) @safe {

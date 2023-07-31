@@ -110,9 +110,9 @@ Gram:
         / '(' "" br ')'
         / '(' br Function_parameter (Separator Function_parameter)* br ')'
 
-    Function_parameter < Declare_uninit / Parameter_init / Value_name / Type_name
+    Function_parameter < Declare_uninit / Parameter_init / Value_name
 
-    Declare_uninit < Value_name br ':' br Type
+    Declare_uninit < Value_name br ':' br Expression
     Parameter_init < Value_name br '=' br Expression
 
     Statement_block < '{' br (Statement_list br)? '}'
@@ -124,11 +124,13 @@ Gram:
     _Ex80 < 
         / Type_annotation(_Ex70)
         / _Ex60
-    _Ex70 < 
-        / Compare(Type)
+    _Ex70 <
         / Compare(_Ex60)
         / _Ex60
     _Ex60 < 
+        #/ Union_dumb(_Ex20)
+        #/ Union(_Ex20)
+        #/ Struct(_Ex20)
         / Op_and(_Ex20) 
         / Op_or(_Ex20) 
         / Op_xor(_Ex20) 
@@ -139,7 +141,11 @@ Gram:
     _Ex20 < 
         / Negate(_Ex20)    
         / Invert(_Ex20)    
-        / Complement(_Ex20) 
+        / Complement(_Ex20)
+        / Mutable(_Ex20) / Immutable(_Ex20)
+        / Optional(_Ex20) / Pointer(_Ex20)
+        / Slice_type(_Ex20) / Small_array(_Ex20)
+        / Error_capture(_Ex20)
         / _Ex10
 
     _Ex10 < 
@@ -147,16 +153,17 @@ Gram:
         / Indexing
         / If_expression
         / Grouping_expression
+        / Unit_literal
         / Lit_number 
         / Value_name
 
-    Type_annotation(Ex) < (Type br ':' br)+ Ex
+    Type_annotation(Ex) < (Ex br ':' br)+ Ex
     Op_and(Ex)     < Ex (br '&' br Ex)+
     Op_xor(Ex)     < Ex (br '+|' br Ex)+
-    Op_or(Ex)      < Ex (br '|' br Ex)+ 
+    Op_or(Ex)      < Struct_field(Ex) (br '|' br Struct_field(Ex))+ 
     Compare(Ex)    < Ex (br (^'<=' / ^'<' / ^'>=' / ^'>' / ^'=' / ^'!=') br Ex)+
-    Sum_op(Ex)          < Ex (br '+' br Ex)+
-    Product_op(Ex)      < Ex (br '*' br Ex)+
+    Sum_op(Ex)          < Struct_field(Ex) (br '+' br Struct_field(Ex))+
+    Product_op(Ex)      < Struct_field(Ex) (br '*' br Struct_field(Ex))+
     Negate(Ex)          < '-' br Ex
     Invert(Ex)          < '/' br Ex
     Complement(Ex)      < '!' br Ex
@@ -174,46 +181,45 @@ Gram:
 
 
 ## Type expressions
-    Type <
-        / Union_dumb 
-        / Union      
-        / Struct     
-        / Mutable / Immutable
-        / Optional / Pointer 
-        / Slice_type / Small_array
-        / Type_grouping
-        / Unit_literal
-        / Type_name
+    #Type <
+    #    / Union_dumb 
+    #    / Union      
+    #    / Struct     
+    #    / Mutable() / Immutable()
+    #    / Optional() / Pointer()
+    #    / Slice_type() / Small_array()
+    #    / Error_capture()
+    #    / Type_grouping
+    #    / Unit_literal
+    #    / Type_name
 
     Unit_literal < "Void"
 
-    Type_grouping < '(' br Type br ')'
+    # Type_grouping < '(' br Type br ')'
 
 
-    Union_dumb < (Union_dumb_field) (br '|' br Union_dumb_field)+
-    Union      < Union_field (br '+' br Union_field)+
-    Struct     < 
-        / Static_array
-        / Struct_field (br '*' br Struct_field)+
+    #Union_dumb(Ex)  < Struct_field(Ex) (br '|' br Struct_field(Ex))+
+    #Union(Ex)       < Struct_field(Ex) (br '+' br Struct_field(Ex))+
+    #Struct(Ex)      < Struct_field(Ex) (br '*' br Struct_field(Ex))+
 
-    Struct_field < Type_name / Declare_uninit
-    Union_field < Type_name / Declare_uninit / Value_name
-    Union_dumb_field < Type_name / Declare_uninit
+    Struct_field(Ex) < Value_name / Declare_uninit / Ex
+    #Union_field < Value_name / Declare_uninit / Ex
+    #Union_dumb_field < Value_name / Declare_uninit / Ex
 
-    Mutable         < 'mut' br Type
-    Immutable       < 'imut' br Type
-    Optional        < '?' br Type
-    Pointer         < '&' br Type
-    Slice_type      < '[' br ']' br Type
-    Small_array     < '[' br '$' br Expression br ']' br Type
-    Error_capture   < '!' br Type
+    Mutable(Ex)     < 'mut' br Ex
+    Immutable(Ex)   < 'imut' br Ex
+    Optional(Ex)    < '?' br Ex
+    Pointer(Ex)     < '&' br Ex
+    Slice_type(Ex)  < '[' br ']' Ex
+    Small_array(Ex) < '[' br '$' br Expression br ']' Ex
+    Error_capture(Ex) < '!' br Ex
     
-    Static_array < Type br '^' br Expression
+    Static_array(Ex) < Ex br '^' br Expression
 
 
 ## Lexing
-    Value_name <~ [a-z] alphanumeric* ('-' alphanumeric+)*
-    Type_name  <~ [A-Z] alphanumeric* ('-' alphanumeric+)*
+    Value_name <~ [a-zA-Z] alphanumeric* ('-' alphanumeric+)*
+    #Type_name  <~ [A-Z] alphanumeric* ('-' alphanumeric+)*
     Lit_number <~ number_dec / number_hex / number_bin
 
 

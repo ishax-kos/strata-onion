@@ -6,6 +6,8 @@ import std.array: array;
 import std.algorithm;
 import std.format;
 import pegged.grammar : ParseTree;
+import codegen;
+// import typechecking;
 
 import std.stdio;
 
@@ -34,14 +36,14 @@ interface Statement {
     }
 }
 
-
-interface Expression : Type {
+interface Expression : Struct_field {
     static typeof(this) 
     create(ParseTree node) {
         return create_subtype!(typeof(this))(node);
     }
-}
 
+    // string gen_c_expression();
+}
 
 interface Function_parameter {
     static typeof(this) 
@@ -57,21 +59,12 @@ interface Struct_field {
     }
 }
 
-interface Type {
-    static typeof(this) 
-    create(ParseTree node) {
-        return create_subtype!(typeof(this))(node);
-    }
-}
+/// *** Subtypes ***
 
-// *** Subtypes ***
-
-// @Statement
-class Define_variable : Statement {
+class Define_variable : Statement, Declaration {
     string name;
     Expression init;
-
-    static typeof(this) 
+    static typeof(this)
     create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
@@ -80,11 +73,10 @@ class Define_variable : Statement {
         ret.init = Expression.create(node.children[1]);
         return ret;
     }
+    mixin Declaration.gen_c;
 }
 
-
-// @Statement
-class Define_function : Statement {
+class Define_function : Statement, Declaration {
 
     string name;
     Function_parameter[] arguments_in;
@@ -119,47 +111,33 @@ class Define_function : Statement {
 
         return ret;
     }
+
+    mixin Declaration.gen_c;
 }
 
-
-mixin template create_compare() {
-    static typeof(this) 
-    create(ParseTree node) {
+class Declare_uninit : Function_parameter, Struct_field {
+    string name;
+    Expression type;
+    
+    static typeof(this) create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        assert(node.children.length % 2 == 1);
+        assert(node.children.length == 2);
+        ret.name = Value_name.create(node.children[0]).name;
+        ret.type = Expression.create(node.children[1]);
 
-        
-        void handler(T)() {
-            int i = 1;
-            T[] items;
-            while (i < node.children.length) {
-                ret.relations ~= cast(byte) compare.countUntil(node.children[i].input);
-                i += 1;
-                items ~= T.create(node.children[i]);
-                i += 1;
-            }
-            ret.items = items;
-        }
-
-
-        if (get_name(node.children[0]) == "Type") {
-            ret.items = [Type.create(node.children[0])];
-            handler!Type();
-        } else {
-            ret.items = [Expression.create(node.children[0])];
-            handler!Expression();
-        }
         return ret;
     }
 }
+
+class Parameter_init : Function_parameter {}
 
 class Compare : Expression {
-    static string[] compare_left  = ["!=" , "=", ">", ">="];
-    static string[] compare_right = ["!=" , "=", "<", "<="];
+    // static string[] compare_left  = ["!=" , "=", ">", ">="];
+    // static string[] compare_right = ["!=" , "=", "<", "<="];
     byte direction = 0; // 0, 1, 2
     byte[] operators;    
-    SumType!(Expression[], Type[]) items;
+    Expression[] items;
 
     static typeof(this) 
     create(ParseTree node) {
@@ -167,59 +145,32 @@ class Compare : Expression {
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length % 2 == 1);
 
-        
-        void handler(T)() {
-            int i = 1;
-            T[] items;
-            string[] glyphs = ["!=", "="];
-            int direction = 0;
-            while (i < node.children.length) {
-                if (direction == 0) {
-                    if (node.children[i].matches[0][0] == '>')  {
-                        direction = 1; 
-                        glyphs = ["!=" , "=", ">", ">="];
-                    }
-                    else if (node.children[i].matches[0][0] == '<')  {
-                        direction = 2;
-                        glyphs = ["!=" , "=", "<", "<="];
-                    }
+        ret.items = [Expression.create(node.children[0])];
+        int i = 1;
+        string[] glyphs = ["!=", "="];
+        while (i < node.children.length) {
+            if (ret.direction == 0) {
+                if (node.children[i].matches[0][0] == '>')  {
+                    ret.direction = 1; 
+                    glyphs = ["!=" , "=", ">", ">="];
                 }
-                byte operator = cast(byte) glyphs.countUntil(node.children[i].matches[0]);
-                assert(operator != -1, format!"%s is not in %s"(node.children[i].matches[0], glyphs));
-                ret.operators ~= operator;
-                i += 1;
-                items ~= T.create(node.children[i]);
-                i += 1;
+                else if (node.children[i].matches[0][0] == '<')  {
+                    ret.direction = 2;
+                    glyphs = ["!=" , "=", "<", "<="];
+                }
             }
-            ret.direction = cast(byte) direction;
-            ret.items = items;
+            byte operator = cast(byte) glyphs.countUntil(node.children[i].matches[0]);
+            assert(operator != -1, format!"%s is not in %s"(node.children[i].matches[0], glyphs));
+            ret.operators ~= operator;
+            i += 1;
+            ret.items ~= Expression.create(node.children[i]);
+            i += 1;
         }
 
-
-        if (get_name(node.children[0]) == "Type") {
-            ret.items = [Type.create(node.children[0])];
-            handler!Type();
-        } else {
-            ret.items = [Expression.create(node.children[0])];
-            handler!Expression();
-        }
         return ret;
     }
 }
 
-class Type_Name : Expression {
-    string name;
-
-    static typeof(this) 
-    create(ParseTree node) {
-        auto ret = new typeof(this);
-        validate_node!(typeof(this).stringof)(node);
-        ret.name = node.matches[0];
-        return ret;
-    }
-}
-
-// @Expression
 class Struct : Expression {
     static typeof(this) 
     create (ParseTree node) {
@@ -232,14 +183,14 @@ class Struct : Expression {
         // return ret;
     }
 }
-// @Expression
-class Slice_type : Type {
-    Type base;
+ 
+class Slice_type : Expression {
+    Expression base;
     static typeof(this)
     create (ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.base = Type.create(node.children[0]);
+        ret.base = Expression.create(node.children[0]);
         return ret;
     }
 }
@@ -254,49 +205,20 @@ class Value_name : Expression, Function_parameter {
         return ret;
     }
 }
-class Type_name : Type, Function_parameter {
-    string name;
-    static typeof(this) 
-    create (ParseTree node) {
-        auto ret = new typeof(this);
-        validate_node!(typeof(this).stringof)(node);
-        ret.name = node.matches[0];
-        return ret;
-    }
-}
 
-
-class Declare_uninit : Function_parameter, Struct_field {
-    string name;
-    Type type;
-    
-    static typeof(this) create(ParseTree node) {
-        auto ret = new typeof(this);
-        validate_node!(typeof(this).stringof)(node);
-        assert(node.children.length == 2);
-        ret.name = Value_name.create(node.children[0]).name;
-        ret.type = Type.create(node.children[1]);
-
-        return ret;
-    }
-}
-class Parameter_init : Function_parameter {}
-
-// @Expression
 class Type_annotation : Expression {
-    Type type;
+    Expression type;
     Expression value;
     static typeof(this) 
     create (ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length == 2);
-        ret.type  = Type.create(node.children[0]);
+        ret.type  = Expression.create(node.children[0]);
         ret.value = Expression.create(node.children[1]);
         return ret;
     }
 }
-
 
 class Function_call : Expression {
     Expression callee;
@@ -315,6 +237,7 @@ class Function_call : Expression {
         return ret;
     }
 }
+
 class Indexing : Expression {
     Expression indexee;
     Expression index;
@@ -331,7 +254,6 @@ class Indexing : Expression {
     }
 }
 
-
 class Lit_number : Expression {
     string representation;
     static create(ParseTree node) {
@@ -343,27 +265,41 @@ class Lit_number : Expression {
 }
 
 class Sum_op : Expression {
-    Expression lhs;
-    Expression rhs;
+    Struct_field lhs;
+    Struct_field rhs;
     static create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.lhs = Expression.create(node.children[0]);
-        ret.rhs = Expression.create(node.children[1]);
+        ret.lhs = Struct_field.create(node.children[0]);
+        ret.rhs = Struct_field.create(node.children[1]);
         return ret;
     }
 }
+
 class Product_op : Expression {
-    Expression lhs;
-    Expression rhs;
+    Struct_field lhs;
+    Struct_field rhs;
     static create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.lhs = Expression.create(node.children[0]);
-        ret.rhs = Expression.create(node.children[1]);
+        ret.lhs = Struct_field.create(node.children[0]);
+        ret.rhs = Struct_field.create(node.children[1]);
         return ret;
     }
 }
+
+class Op_or : Expression {
+    Struct_field lhs;
+    Struct_field rhs;
+    static create(ParseTree node) {
+        auto ret = new typeof(this);
+        validate_node!(typeof(this).stringof)(node);
+        ret.lhs = Struct_field.create(node.children[0]);
+        ret.rhs = Struct_field.create(node.children[1]);
+        return ret;
+    }
+}
+
 class Grouping_expression : Expression {
     static create(ParseTree node) {
         return Expression.create(node.children[0]);
@@ -371,7 +307,7 @@ class Grouping_expression : Expression {
 }
 
 
-// *** Helper functions ***
+/// *** Helper functions ***
 private:
 
 Super create_subtype(Super)(ParseTree node) {
@@ -404,10 +340,11 @@ string msg_wrong_node(ParseTree node, string expected) {
     return format!"Wrong node type '%s'. Expected %s."(get_name(node), expected);
 }
 
-// alias get_types = getSymbolsByUDA(typeof(this))
+
 template is_same(A) {
     bool is_same(B)() {return is(A == B);}
 }
+
 
 TypeInfo get_type_info(T)() {
     return typeid(T);
@@ -427,38 +364,11 @@ template Get_nodes(T) {
 }
 
 
-struct Ref(T) {
-    alias Ref_type = T*;
-    
-    Ref_type value;
-
-    this(T value_) {
-        this.value = new T();
-        *(this.value) = value_;
-    }
-
-    // this(A...)(A args) {
-    //     // pragma(msg, A);
-    //     this.value = new T(args);
-    // }
-
-    ref T get() {
-        assert(value != null);
-        return *value;
-    }
-
-    // string toString() const {
-    //     import std.conv;
-    //     return (*value).to!string();
-    // }
-
-    alias get this;
-}
-
-
 void validate_node(string name)(ParseTree node) {
     assert(get_name(node) == name, msg_wrong_node(node, "'"~name~"'"));
 }
+
+
 string get_name(ParseTree node) {
     import std.array: split;
     import std.conv;

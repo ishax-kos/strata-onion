@@ -7,87 +7,49 @@ import std.format;
 import std.range;
 import std.algorithm;
 import std.conv;
-import std.regex;
 import core.bitop;
 
 
-string generate(Module node) {
-    string output = node.statements
-        .map!(n => cast(Declaration) n)
-        .filter!(n => n !is null)
-        .map!(n => n.gen_c_declare)
+
+string generate(Module mod) {
+    // alias foo = dispatch!(Declaration, nodes);
+    string output = mod.statements
+        .map!(st => st.gen_c_declare)
         .joiner("\n\n")
         .to!string;
-    output ~= "\n\n";
-    // output ~= node.statements
-    //     .map!(n => n.gen_c_define);
+    output ~= "\n\n\n";
+    output ~= mod.statements
+        .map!(n => n.gen_c_statement)
+        .joiner("\n\n")
+        .to!string;
     return output;
 }
 
-interface Declaration {
-    string gen_c_declare();
-    mixin template gen_c() {
-        override string
-        gen_c_declare() {
-            return .gen_c_declare(this);
-        }
-    }
+string gen_c_scope(Statement[] block) {
+    return "{\n" 
+        ~ block
+            .map!(n => n.gen_c_statement)
+            .joiner("\n")
+            .to!string 
+        ~ "\n}";
 }
-
-
-// string[] gen_c_scope(Statement[] block) {
-//     return ["{"] ~ block.map!gen_c_statement.array ~ ["}"];
-// }
 
 
 string gen_c_prototype(Define_function func) {
     return format!"%s %s(%s)"(
-        standin_type, 
+        stand_in_type, 
         func.name.c_name, 
-        func.arguments_in.map!gen_c_parameter.joiner(", "),
-        // func.arguments_out.map!gen_c_parameter 
+        func.arguments_in.map!(a => a.gen_c_parameter).joiner(", "),
+        //. func.arguments_out.map!gen_c_parameter 
     );
 }
 
 
-string gen_c_parameter(Function_parameter parameter) {
-    if (auto vname = cast(Value_name) parameter) {
-        return format!"%s %s"(standin_type, vname.name.c_name);
-        /// assert(0, "Cannot yet omit types in function parameters. Try implementing overloads.");
-    } else 
-    if (auto vparam = cast(Declare_uninit) parameter) {
-        return format!"%s %s"(standin_type, vparam.name.c_name);
-    } else 
-    if (auto vparam = cast(Parameter_init) parameter) {
-        assert(0, 
-            "Default parameters are a part of overloading "
-            ~"which isn't implemented."
-        );
-        /// return format!"%s %s"(standin_type, vparam.name.c_name);
-    } else {
-        assert(0);
-    }
-}
-
-
-auto c_name(string name) {
-    return name.map!(ch => ch == '-' ? '_' : ch);
-}
-
-// string gen_c_define(Define_variable var) {
-//     return format!"%s %s = %s;"(
-//         standin_type, 
-//         var.name.c_name,
-//         var.init.gen_c_expression()
-//     );
-// }
-
-string gen_c_declare(Define_variable var) {
-    return format!"%s %s;"(standin_type, var.name.c_name );
-}
-
-string gen_c_declare(Define_function func) {
-    return gen_c_prototype(func) ~ ";";
+string c_name(string name) {
+    return name
+        .map!(ch => ch == '-' ? '_' : ch)
+        .to!string
+    ;
 }
 
 
@@ -95,9 +57,10 @@ unittest {
     import nodes;
     import parse;
     string c_code = "
-        ;foo-bar = Fuck : me
+        ;foo-bar = Heck : me
         fun main(bing : bong, flim: flam)() {
-            ;fkjskfjsdfks = 11
+            ;blah = 11
+            blah = 22
         }
     ".parse_code().generate();
     debug { import std.stdio : writeln; try { writeln(c_code); } catch (Exception) {} }
@@ -121,3 +84,19 @@ auto indent(R)(R range, int level) {
 auto indent(S)(S str, int level) {
     return chain(tab(level), str);
 }
+
+auto dispatch(Super, string call, alias module_, T)(T object) {
+    import std.traits: TemplateArgsOf;
+    import std.conv;
+    // import sts
+    alias Subtype_list = Subtypes!(Super, module_);
+    static foreach(Subtype; Subtype_list) {
+        if (auto val = cast(Subtype) object) {
+            return mixin(call)(val);
+        }
+    }
+    assert(0, format!"Found %s"(object));
+}
+
+
+// alias dispatch(S, string call) = dispatch!(S, call, nodes);

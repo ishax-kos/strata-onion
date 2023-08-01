@@ -1,5 +1,5 @@
 module typechecking;
 
-/// For now, everything shall be int!
+// For now, everything shall be int!
 
-enum standin_type = "int";
+enum stand_in_type = "int";

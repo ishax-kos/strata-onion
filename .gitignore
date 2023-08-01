@@ -14,3 +14,4 @@ onion-test-*
 *.o
 *.obj
 *.lst
+.vscode/*

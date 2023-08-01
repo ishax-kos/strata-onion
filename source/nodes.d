@@ -1,13 +1,14 @@
 module nodes;
 
-import std.sumtype;
 import std.traits: getSymbolsByUDA, Largest, hasStaticMember;
 import std.array: array;
 import std.algorithm;
+import std.range;
 import std.format;
+import std.conv;
 import pegged.grammar : ParseTree;
 import codegen;
-// import typechecking;
+import typechecking: stand_in_type;
 
 import std.stdio;
 
@@ -27,14 +28,19 @@ class Module {
 }
 
 
-// *** Super Types ***
+//. *** Super Types ***
 
 interface Statement {
     static typeof(this) 
     create(ParseTree node) {
         return create_subtype!(typeof(this))(node);
     }
+    string gen_c_declare();
+    string gen_c_statement();
 }
+
+// interface Declaration {
+// }
 
 interface Expression : Struct_field {
     static typeof(this) 
@@ -42,7 +48,16 @@ interface Expression : Struct_field {
         return create_subtype!(typeof(this))(node);
     }
 
-    // string gen_c_expression();
+    bool is_type();
+    
+    string gen_c_expression();
+    //  {
+    //     return "/*an expression*/";
+    // }
+    // final
+    // string gen_c_expression_left() {
+    //     return "/*an lvalue*/";
+    // }
 }
 
 interface Function_parameter {
@@ -50,6 +65,7 @@ interface Function_parameter {
     create(ParseTree node) {
         return create_subtype!(typeof(this))(node);
     }
+    string gen_c_parameter();
 }
 
 interface Struct_field {
@@ -59,11 +75,33 @@ interface Struct_field {
     }
 }
 
-/// *** Subtypes ***
+//. *** Subtypes ***
 
-class Define_variable : Statement, Declaration {
+class Assign : Statement {
+    Expression lvalue;
+    Expression rvalue;
+    
+    static typeof(this)
+    create(ParseTree node) {
+        auto ret = new typeof(this);
+        validate_node!(typeof(this).stringof)(node);
+        assert(node.children.length == 2);
+        ret.lvalue = Expression.create(node.children[0]);
+        ret.rvalue = Expression.create(node.children[1]);
+        return ret;
+    }
+    
+    string gen_c_declare () => "";
+    string gen_c_statement () => format!"%s = %s;"(
+        lvalue.gen_c_expression,
+        rvalue.gen_c_expression,
+    );
+}
+
+class Define_variable : Statement {
     string name;
     Expression init;
+    
     static typeof(this)
     create(ParseTree node) {
         auto ret = new typeof(this);
@@ -73,17 +111,24 @@ class Define_variable : Statement, Declaration {
         ret.init = Expression.create(node.children[1]);
         return ret;
     }
-    mixin Declaration.gen_c;
+    
+    string gen_c_declare () => format!"%s %s;"(
+        stand_in_type, 
+        this.name.c_name 
+    );
+    string gen_c_statement () => format!"%s %s = %s;"(
+        stand_in_type,
+        this.name.c_name,
+        this.init.gen_c_expression()
+    );
 }
 
-class Define_function : Statement, Declaration {
-
+class Define_function : Statement {
     string name;
     Function_parameter[] arguments_in;
     Function_parameter[] arguments_out;
     Statement[] block;
-
-
+    
     static typeof(this) 
     create(ParseTree node) {
         auto ret = new typeof(this);
@@ -112,7 +157,11 @@ class Define_function : Statement, Declaration {
         return ret;
     }
 
-    mixin Declaration.gen_c;
+    string gen_c_declare () => gen_c_prototype(this) ~ ";";
+    string gen_c_statement () => format!"%s %s"(
+        gen_c_prototype(this),
+        gen_c_scope(this.block)
+    );
 }
 
 class Declare_uninit : Function_parameter, Struct_field {
@@ -128,14 +177,33 @@ class Declare_uninit : Function_parameter, Struct_field {
 
         return ret;
     }
+
+    string gen_c_parameter() => format!"%s %s"(stand_in_type, this.name.c_name);
 }
 
-class Parameter_init : Function_parameter {}
+// class Parameter_init : Function_parameter {}
+
+class Value_name : Expression, Function_parameter {
+    import std.uni: isUpper;
+    string name;
+    static typeof(this) 
+    create (ParseTree node) {
+        auto ret = new typeof(this);
+        validate_node!(typeof(this).stringof)(node);
+        ret.name = node.matches[0];
+        return ret;
+    }
+    bool is_type() => name[0].isUpper;
+
+    string gen_c_parameter() => format!"%s %s"(stand_in_type, this.name.c_name);
+
+    string gen_c_expression() => name.c_name;
+}
 
 class Compare : Expression {
-    // static string[] compare_left  = ["!=" , "=", ">", ">="];
-    // static string[] compare_right = ["!=" , "=", "<", "<="];
-    byte direction = 0; // 0, 1, 2
+    static string[] compare_left  = ["!=" , "=", ">", ">="];
+    static string[] compare_right = ["!=" , "=", "<", "<="];
+    byte direction = 0; /// 0 =, 1 >, 2 <
     byte[] operators;    
     Expression[] items;
 
@@ -169,9 +237,26 @@ class Compare : Expression {
 
         return ret;
     }
+
+    bool is_type() => false;
+    
+    string gen_c_expression() {
+        if (items[0].is_type()) {
+            return "comptime";
+        } else {
+            return 
+                roundRobin(
+                    items.map!(i=>i.gen_c_expression), 
+                    direction == 2? compare_left : compare_right
+                )
+                .joiner(" ")
+                .to!string
+            ;
+        }
+    }
 }
 
-class Struct : Expression {
+/+class Struct : Expression {
     static typeof(this) 
     create (ParseTree node) {
         auto ret = new typeof(this);
@@ -182,7 +267,7 @@ class Struct : Expression {
         // members
         // return ret;
     }
-}
+}+/
  
 class Slice_type : Expression {
     Expression base;
@@ -193,16 +278,12 @@ class Slice_type : Expression {
         ret.base = Expression.create(node.children[0]);
         return ret;
     }
-}
+    bool is_type() => true;
 
-class Value_name : Expression, Function_parameter {
-    string name;
-    static typeof(this) 
-    create (ParseTree node) {
-        auto ret = new typeof(this);
-        validate_node!(typeof(this).stringof)(node);
-        ret.name = node.matches[0];
-        return ret;
+    string gen_c_expression() {
+        assert(0, "needs to be rearanged to Type name[]");
+        // return base.gen_c_expression ~ "var_name" ~ "[]";
+
     }
 }
 
@@ -218,11 +299,22 @@ class Type_annotation : Expression {
         ret.value = Expression.create(node.children[1]);
         return ret;
     }
+    
+    bool is_type() => 0
+        || (
+            cast(Value_name)type !is null 
+            && (cast(Value_name) type).name == "Type"
+        )
+        || value.is_type
+    ;
+
+    string gen_c_expression() => value.gen_c_expression();
 }
 
 class Function_call : Expression {
     Expression callee;
     Expression[] arguments;
+
     static create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
@@ -235,6 +327,23 @@ class Function_call : Expression {
             .map!(a => Expression.create(a))
             .array;
         return ret;
+    }
+
+    bool is_type() => assert(0, "not implemented");
+
+    string gen_c_expression() {
+        string callee_expr = callee.gen_c_expression;
+        if (cast(Value_name) callee is null) {
+            callee_expr = "(" ~ callee_expr ~ ")";
+        }
+        
+        return format!"%s(%s)"(
+            callee_expr,
+            arguments
+                .map!(n=>n.gen_c_expression)
+                .joiner(", ")
+                .to!string
+        );
     }
 }
 
@@ -252,6 +361,11 @@ class Indexing : Expression {
         ret.index = Expression.create(node.children[1]);
         return ret;
     }
+
+    bool is_type() => assert(0, "not implemented");
+
+    string gen_c_expression() => 
+        format!"index(%s, %s)"(indexee, index);
 }
 
 class Lit_number : Expression {
@@ -260,60 +374,126 @@ class Lit_number : Expression {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         ret.representation = node.matches[0];
+        // debug { import std.stdio : writeln; try { writeln(ret.representation); } catch (Exception) {} }
         return ret;
     }
+
+    bool is_type() => false;
+    
+    string gen_c_expression() => representation
+        .to!int
+        .to!string
+    ;
 }
 
 class Sum_op : Expression {
-    Struct_field lhs;
-    Struct_field rhs;
+    Struct_field[] operands;
     static create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.lhs = Struct_field.create(node.children[0]);
-        ret.rhs = Struct_field.create(node.children[1]);
+        ret.operands = node.children
+            .map!(Struct_field.create)
+            .array;
         return ret;
+    }
+
+    bool is_type () {
+        if (auto val = cast(Expression) operands[0]) {
+            return val.is_type;
+        } else if (cast(Declare_uninit) operands[0]) {
+            return true;
+        } else {
+            assert(0);
+        }
+    }
+    
+    string gen_c_expression() {
+        auto expressions = operands.map!(n=>cast(Expression) n);
+        assert(expressions.all!(n=>n !is null));
+        return expressions.map!(n=>n.gen_c_expression)
+            .joiner(" + ")
+            .to!string
+        ;
     }
 }
 
 class Product_op : Expression {
-    Struct_field lhs;
-    Struct_field rhs;
+    Struct_field[] operands;
     static create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.lhs = Struct_field.create(node.children[0]);
-        ret.rhs = Struct_field.create(node.children[1]);
+        ret.operands = node.children
+            .map!(Struct_field.create)
+            .array;
         return ret;
+    }
+
+    bool is_type () {
+        if (auto val = cast(Expression) operands[0]) {
+            return val.is_type;
+        } else if (cast(Declare_uninit) operands[0]) {
+            return true;
+        } else {
+            assert(0);
+        }
+    }
+
+    string gen_c_expression() {
+        auto expressions = operands.map!(n=>cast(Expression) n);
+        assert(expressions.all!(n=>n !is null));
+        return expressions.map!(n=>n.gen_c_expression)
+            .joiner(" * ")
+            .to!string
+        ;
     }
 }
 
 class Op_or : Expression {
-    Struct_field lhs;
-    Struct_field rhs;
+    Struct_field[] operands;
     static create(ParseTree node) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.lhs = Struct_field.create(node.children[0]);
-        ret.rhs = Struct_field.create(node.children[1]);
+        ret.operands = node.children
+            .map!(Struct_field.create)
+            .array;
         return ret;
+    }
+
+    bool is_type () {
+        if (auto val = cast(Expression) operands[0]) {
+            return val.is_type;
+        } else if (cast(Declare_uninit) operands[0]) {
+            return true;
+        } else {
+            assert(0);
+        }
+    }
+
+    string gen_c_expression() {
+        auto expressions = operands.map!(n=>cast(Expression) n);
+        assert(expressions.all!(n=>n !is null));
+        return expressions.map!(n=>n.gen_c_expression)
+            .joiner(" | ")
+            .to!string
+        ;
     }
 }
 
+abstract
 class Grouping_expression : Expression {
     static create(ParseTree node) {
         return Expression.create(node.children[0]);
     }
+    // bool is_type() => false;
 }
 
 
-/// *** Helper functions ***
-private:
+//. *** Helper functions ***
 
 Super create_subtype(Super)(ParseTree node) {
     import std.traits: TemplateArgsOf;
     import std.conv;
-    alias Node_types = Get_nodes!Super;
+    alias Node_types = Subtypes!Super;
 
     ParseTree sub_node;
 
@@ -351,18 +531,18 @@ TypeInfo get_type_info(T)() {
 }
 
 
-template Get_nodes(T) {
-    alias Get_nodes = AliasSeq!();
-    static foreach (name; __traits(allMembers, mixin(__MODULE__))) {
+template Subtypes(T, alias module_ = nodes) {
+    alias Subtypes = AliasSeq!();
+    static foreach (name; __traits(allMembers, module_)) {
         static if (is(mixin(name) : T) 
                    && !is(mixin(name) == T)
                    && is(mixin(name) == class)) {
-            static assert (hasStaticMember!(T, "create"), T.stringof);
-            Get_nodes = AliasSeq!(Get_nodes, mixin(name));
+            // static assert (hasStaticMember!(T, "create"), T.stringof);
+            Subtypes = AliasSeq!(Subtypes, mixin(name));
         }
     }
 }
-
+private:
 
 void validate_node(string name)(ParseTree node) {
     assert(get_name(node) == name, msg_wrong_node(node, "'"~name~"'"));

@@ -122,7 +122,7 @@ Gram:
     Expression < _Ex80
 
     _Ex80 < 
-        / Type_annotation(_Ex70)
+        / Annotation_of_type(_Ex70)
         / _Ex60
     _Ex70 <
         / Compare(_Ex60)
@@ -157,7 +157,7 @@ Gram:
         / Lit_number 
         / Value_name
 
-    Type_annotation(Ex) < (Ex br ':' br)+ Ex
+    Annotation_of_type(Ex) < (Ex br ':' br)+ Ex
     Op_and(Ex)     < Ex (br '&' br Ex)+
     Op_xor(Ex)     < Ex (br '+|' br Ex)+
     Op_or(Ex)      < Struct_field(Ex) (br '|' br Struct_field(Ex))+ 

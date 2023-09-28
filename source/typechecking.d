@@ -1,7 +1,7 @@
 module typechecking;
 
 import codegen;
-import std.nodes: Expression;
+import nodes: Expression;
 
 import std.format;
 
@@ -15,20 +15,6 @@ static this() {
     data_size = get_integer_size();
 }
 
-private
-enum Discriminant {
-    not_checked,
-    unresolved,
-    unit,
-    type_t,
-    int_word,
-    boolean,
-    func,
-    slice,
-    structure,
-    sumtype,
-    c_union,
-}
 
 
 // struct Type {
@@ -37,7 +23,7 @@ enum Discriminant {
     
 
 //     // union {
-//     //     // Type type_t;
+//     //     // Type type_type;
 //     //     Type_unresolved unresolved_;
 //     //     // Type_int_word int_word_;
 //     //     // Type_boolean boolean_;
@@ -51,11 +37,11 @@ enum Discriminant {
 //     enum boolean = Type(Discriminant.boolean);
 //     enum int_word = Type(Discriminant.int_word);
 //     enum func = Type(Discriminant.func);
-//     enum stand_in = Type(Discriminant.int_word);
-//     enum type_t = Type(Discriminant.type_t);
+//     enum unresolved = Type(Discriminant.int_word);
+//     enum type_type = Type(Discriminant.type_type);
 //     enum unit = Type(Discriminant.unit);
 // }
-
+/+
 Type constant(Type type) {
     type.is_const = true;
     return type;
@@ -76,7 +62,7 @@ string c_usage(Type type) {
             if (data_size <= 64) return "int64_t";
             else throw new Exception(
                 "Integers that large are not currently supported.");
-        case Discriminant.type_t:
+        case Discriminant.type_type:
             throw new Exception(
                 "Type 'Type' can only be used at compile time.");
         case Discriminant.unresolved:
@@ -98,7 +84,7 @@ string[] c_declaration(Type type) {
             return [];
         case Discriminant.int_word:
             return ["include <stdint.h>"];
-        case Discriminant.type_t:
+        case Discriminant.type_type:
             throw new Exception(
                 "Theres no sense in declaring Type in C.");
         case Discriminant.unresolved:
@@ -118,7 +104,7 @@ Type type_from_type_expression(Expression value) {
     import std.nodes;
     // if  
 }
-
++/
 private:
 
 // alias Types = AliasSeq!(

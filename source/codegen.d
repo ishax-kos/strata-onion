@@ -1,7 +1,9 @@
 module codegen;
 
 import nodes;
-import typechecking;
+import dynamic;
+import symbols;
+import internal_type;
 
 import std.format;
 import std.range;
@@ -17,21 +19,21 @@ import std.conv;
 
 
 string generate(Module mod) {
-    // alias foo = dispatch!(Declaration, nodes);
-    string[] output = mod.statements
-        .map!(st => st.gen_c_declare)
+    auto scope_ = mod.scope_;
+    string[] output = scope_.statements
+        .map!(st => st.gen_c_statement(scope_))
         .joiner(lines(1)).array;
     output ~= lines(2);
-    output ~= mod.statements
-        .map!(n => n.gen_c_statement)
+    output ~= scope_.statements
+        .map!(n => n.gen_c_statement(scope_))
         .joiner(lines(1)).array;
     return output.joiner("\n").to!string;
 }
 
-string[] gen_c_scope(Statement[] block) {
+string[] gen_c_scope(Scope scope_) {
     return lines(
         "{",
-        block.map!(n => n.gen_c_statement).joiner(),
+        scope_.statements.map!(n => n.gen_c_statement(scope_)).joiner(),
         "}"
     );
 }
@@ -39,7 +41,7 @@ string[] gen_c_scope(Statement[] block) {
 
 string gen_c_prototype(Define_function func) {
     return format!"%s %s(%s)"(
-        Type.stand_in, 
+        Type.unresolved, 
         func.name.c_name, 
         func.arguments_in.map!(a => a.gen_c_parameter).joiner(", "),
         // func.arguments_out.map!gen_c_parameter 

@@ -1,157 +1,128 @@
 module dynamic;
 
-import typechecking;
+import nodes: Expression, Subtypes, Define_function, Statement;
+import symbols: Scope;
+import internal_type;
+
+import std.algorithm: map;
+import std.array: array;
+import std.conv: to;
+import std.format;
 
 
-// private
-// enum Dyn_discriminant {
-//     unresolved,
-//     unit,
-//     type_t,
-//     int_word,
-//     boolean,
-//     slice,
-//     structure,
-//     sumtype,
-//     c_union,
-// }
 
-
-// struct Value_dyn {
-//     immutable Type type;
-    
-//     enum types = AliasSeq!(
-//         int[0], Discriminant.unit,
-//         Type, Discriminant.type_t,
-//         long, Discriminant.int_word,
-//         bool, Discriminant.boolean,
-//         Dyn_value_slice, Discriminant.slice,
-//     );
-    
-// }
-
-// alias Type_set = AliasSeq!(Uninitialized, Int_word, Address, Unit, Type);
-
-interface Value {
-    Type type();
+interface Value : Expression {
+    /// Class for values that have been resolved
 }
 
-class Type : Value {
-    // Discriminant discriminant = Discriminant.unresolved;
-    bool is_const = false;
+// Type as a value
+class Type_node: Value {
+    Type this_type;
     
-    Type type() => Type.type_t;
-
-    // union {
-    //     // Type type_t;
-    //     Type_unresolved unresolved_;
-    //     // Type_int_word int_word_;
-    //     // Type_boolean boolean_;
-    //     Type_aggregate structure_;
-    //     Type_aggregate sumtype_;
-    //     Type_aggregate c_union_;
-    // }
-    static:
-    Type not_checked = new Type(Discriminant.not_checked);
-    Type unresolved = new Type(Discriminant.unresolved);
-    Type int_word = new Type(Discriminant.int_word);
-    Type stand_in = new Type(Discriminant.int_word);
-    Type boolean = new Type(Discriminant.boolean);
-    Type type_t = new Type(Discriminant.type_t);
-    Type func = new Type(Discriminant.func);
-    Type unit = new Type(Discriminant.unit);
+    override Type get_type(Scope context) => Type.type_type;
+    override string gen_c_expression(Scope context) => "Type_stand_in";
+    override Type determine_type(Scope context) => Type.type_type;
+    override Value evaluate(Scope context) => this;
 }
 
-class Type_uchecked: Type {}
-class Type_int_word: Type {
-    Value_int_word instance(long value) {
-        auto ret = new Value_int_word();
-        ret.value = value;
+struct Argument {
+    string name;
+    Argument_type type;
+}
+immutable shared anon_name = "ANON";
+
+class Value_func: Value {
+    string c_usage() => throw new Error("idk lol");
+
+    string name;
+    Argument[] arguments_in;
+    Argument[] arguments_out;
+    Statement[] block;
+    this() {}
+    this(Define_function func, Scope context) {
+        arguments_in  = func.arguments_in 
+            .map!(a => a.as_argument(context)).array;
+        arguments_out = func.arguments_out
+            .map!(a => a.as_argument(context)).array;
+        name = func.name;
+    }
+
+    static typeof(this) anon(Define_function func, Scope context) {
+        auto ret = new Value_func();
+        ret.arguments_in  = func.arguments_in 
+            .map!(a => a.as_argument(context)).array;
+        ret.arguments_out = func.arguments_out
+            .map!(a => a.as_argument(context)).array;
+        ret.name = anon_name;
         return ret;
     }
-    
-}
-auto type_int_word = new Type_int_word();
-class Type_void: Type {}
-class Type_boolean: Type {}
-class Type_address : Type {
-    Type type() => Type.type_t;
-}
-class Value_address : Type {
-    Type type() => value.type();
-    Expression value;
-}
-class Value_int_word : Type {
-    Type type() => new Type_int_word();
-    long value;
-}
-class Value_function : Value {
-    Type type() => new Type_function(arguments_in, arguments_out);
-    SumType!Type_set[] argument_types;
-    string[] gen_c_declare();
-    
-    Function_parameter[] arguments_in;
-    Function_parameter[] arguments_out;
-    Scope block;
-}
 
-class Type_function : Type {
-    Type[] input_types;
-    Type[] output_types;
-
-    this(
-        Function_parameter[] arguments_in, 
-        Function_parameter[] arguments_out
-    ) {
-        input_types  = arguments_in .map!(a => a.type).array;
-        output_types = arguments_out.map!(a => a.type).array;
+    override Type get_type(Scope context) {
+        return Type.func(this);
     }
+    override string gen_c_expression(Scope context) => throw new Error("Not yet implemented. Needs to spit out a generated function name.");
+    override Type determine_type(Scope context) => Type.func(this);
+    override Value evaluate(Scope context) => this;
+    Value call(Scope context) => throw new Error("OwO");
 }
 
 
+class Value_int_word : Value {
+    long value;
+    this(string val) {value = val.to!long;}
+    
+    override Type get_type(Scope context) => Type.int_word;
+    override string gen_c_expression(Scope context) => value.to!string;
+    override Type determine_type(Scope context) => Type.int_word;
+    override Value evaluate(Scope context) => this;
+}
 
-// struct Dyn_slice {
-//     Type base_type;
-//     void* pointer;
-//     size_t length;
-// }
-// struct Dyn_structure {
-//     Value_dyn[] field_types;
-// }
-// struct Dyn_sumtype {
-//     // Dyn_discriminant[] option_types;
-//     // Value_dyn;
-// }
-// struct Dyn_cunion {
-//     // Dyn_discriminant[] option_types;
-//     // Value_dyn;
-// }
-
-// fun do-stuff(fishes: Int)(ret: Int) {
-//     ret = fishes
-// }
-
-
-
-
-// struct Dyn_type_slice  {
-//     Type base_type;
-// }
-// struct Dyn_type_aggregate  {
-//     Field[] field_types;
-//     struct Field {
-//         string name = [];
-//         Type type;
-//     }
-// }
-// struct Dyn_type_unresolved {
-//     Type* suspect;// = new Type;
-//     this(Type t) {
-//         import std.algorithm: copy;
-//         suspect = new Type;
-//         *suspect = t;
-//     } 
-//     // Discriminant discriminant = Discriminant.unresolved;
+class Value_bool : Value {
+    bool value;
+    this(string val) {
+        if (val == "true") {
+            value = true;
+        } else
+        if (val == "false") {
+            value = true;
+        } else {
+            throw new Error(format!"'%s' is not a valid boolean value."(val));
+        }
+    }
+    this(bool val) {value = val;}
+    
+    override Type get_type(Scope context) => Type.boolean;
+    override string gen_c_expression(Scope context) => 
+        (cast(int) value).to!string;
+    override Type determine_type(Scope context) => Type.boolean;
+    override Value evaluate(Scope context) => this;
+}
+// class Address_value : Value {
+//     Type type = Type.address(Type.unresolved);
+//     void* value;
 // }
 
-// class Type_floating
+
+
+// class Function_value : Value {
+//     import std.algorithm: map;
+//     import std.array: array;
+//     import nodes: Function_parameter;
+//     string name;
+
+//     Function_parameter[] inputs;
+//     Function_parameter[] outputs;
+
+
+
+//     // this(
+//     //     Function_parameter[] arguments_in, 
+//     //     Function_parameter[] arguments_out
+//     // ) {
+//     //     input_types  = arguments_in .map!(a => a.get_type).array;
+//     //     output_types = arguments_out.map!(a => a.get_type).array;
+//     // }
+// }
+
+
+

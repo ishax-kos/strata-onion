@@ -4,6 +4,7 @@ import codegen;
 import typechecking;
 import symbols;
 import dynamic;
+import internal_type;
 
 import pegged.grammar : ParseTree;
 
@@ -37,13 +38,12 @@ class Module {
 //$ *** Super Types ***
 
 interface Statement {
+    string[] gen_c_forward_declaration();
+    string[] gen_c_statement(Scope context);
     static typeof(this) 
     from_pegged(ParseTree node) {
         return create_subtype!(typeof(this))(node);
     }
-    string[] gen_c_statement();
-
-    bool semantics_valid();
 }
 
 // interface Declaration {
@@ -54,13 +54,11 @@ interface Expression : Struct_field {
     from_pegged(ParseTree node) {
         return create_subtype!(typeof(this))(node);
     }
-
-    Type type();
     
-    string gen_c_expression();
-    bool check_type(Type);// {return assert(0);};
-    Type determine_type();// {return Type.stand_in;};
-    Value compute();
+    Type get_type(Scope context);
+    string gen_c_expression(Scope context);
+    Type determine_type(Scope context);// {return Type.unresolved;};
+    Value evaluate(Scope context);
 }
 
 interface Function_parameter {
@@ -69,6 +67,8 @@ interface Function_parameter {
         return create_subtype!(typeof(this))(node);
     }
     string gen_c_parameter();
+    string arg_name();
+    Argument as_argument(Scope context);
     // bool semantics_valid();
 }
 
@@ -105,10 +105,10 @@ class Assign : Statement {
         return ret;
     }
     
-    string[] gen_c_declare () => [];
-    string[] gen_c_statement () => [format!"%s = %s;"(
-        lvalue.gen_c_expression,
-        rvalue.gen_c_expression,
+    string[] gen_c_forward_declaration () => [];
+    string[] gen_c_statement(Scope context) => [format!"%s = %s;"(
+        lvalue.gen_c_expression(context),
+        rvalue.gen_c_expression(context),
     )];
 
     // bool semantics_valid() {
@@ -132,16 +132,15 @@ class Define_variable : Statement {
         return ret;
     }
     
-    string[] gen_c_declare () => [format!"%s %s;"(
-        Type.stand_in.c_usage,
+    string[] gen_c_forward_declaration () => [format!"%s %s;"(
+        Type.unresolved.c_usage,
         this.name.c_name
     )];
-    string[] gen_c_statement () => [format!"%s %s = %s;"(
-        Type.stand_in.c_usage,
+    string[] gen_c_statement(Scope context) => [format!"%s %s = %s;"(
+        Type.unresolved.c_usage,
         this.name.c_name,
-        this.init.gen_c_expression()
+        this.init.gen_c_expression(context)
     )];
-
 }
 
 class Define_function : Statement {
@@ -178,11 +177,10 @@ class Define_function : Statement {
         return ret;
     }
 
-    string[] gen_c_declare () => [gen_c_prototype(this) ~ ";"];
-    string[] gen_c_statement () {
-        return [gen_c_prototype(this) ~ " {"]
-            ~ gen_c_scope(this.block)[1..$];
-    }
+    string[] gen_c_forward_declaration () => [gen_c_prototype(this) ~ ";"];
+    string[] gen_c_statement(Scope context) => 
+        [gen_c_prototype(this) ~ " {"] ~ 
+        gen_c_scope(this.block)[1..$];
 }
 
 class Declare_uninit : Function_parameter, Struct_field {
@@ -198,16 +196,28 @@ class Declare_uninit : Function_parameter, Struct_field {
 
         return ret;
     }
+    override:
+    string arg_name() => name;
 
     string gen_c_parameter() => 
         format!"%s %s"(
-            Type.stand_in.c_usage, 
+            Type.unresolved.c_usage, 
             this.name.c_name);
+
+    Argument as_argument(Scope context) {
+        Argument ret;
+        Type_node t = cast(Type_node) type.evaluate(context);
+        assert(t);
+        ret.type = Argument_type(t.this_type);
+        ret.name = name;
+        return ret;
+    }
 }
 
 class Value_name : Expression, Function_parameter {
     import std.uni: isUpper;
     string name;
+    // private Type type = Type.unresolved;
     static typeof(this) 
     from_pegged (ParseTree node) {
         auto ret = new typeof(this);
@@ -215,28 +225,45 @@ class Value_name : Expression, Function_parameter {
         ret.name = node.matches[0];
         return ret;
     }
-    bool is_type() => name[0].isUpper;
+    // bool is_type() => name[0].isUpper;
+    string arg_name() => name;
 
     string gen_c_parameter() => 
         format!"%s %s"(
-            Type.stand_in.c_usage, 
+            Type.unresolved.c_usage, 
             this.name.c_name);
 
-    string gen_c_expression() => name.c_name;
+    string gen_c_expression(Scope) => name.c_name;
     
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.stand_in;};
+    Type determine_type(Scope context) {
+        // The type of an invoked identifier is allowed to be sussed out if it
+        // Is not overloaded.
+        return context.fetch_type(name);
+    }
 
-    Type type = Type.not_checked;
+    private Type type = Type.unresolved;
+    Type get_type(Scope context) {
+        if (type == Type.unresolved) {
+            type = determine_type(context);
+        }
+        return type;
+    }
 
     Value evaluate(Scope context) {
-        if (type == Type.not_checked) {
-            type = determine_type();
+        if (type == Type.unresolved) {
+            throw new Error("Type could not be resolved before use.");
         }
-        if (type != Type.type_t) {
-            throw new Error("Cant do that yet.");
+        if (type != Type.type_type) {
+            // throw new Error("Cant do that yet.");
         }
-        return context.fetch_value(name).value;
+        return context.fetch_value(name, type);
+    }
+
+    Argument as_argument(Scope context) {
+        Argument ret;
+        ret.type = Argument_type(this.get_type(context));
+        ret.name = name;
+        return ret;
     }
 }
 
@@ -250,22 +277,29 @@ class Lit_number : Expression {
         return ret;
     }
 
-    bool is_type() => false;
+    // bool is_type() => false;
     
-    string gen_c_expression() => representation
+    string gen_c_expression(Scope) => representation
         .to!int
         .to!string
     ;
     
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return type_int_word;};
+    bool check_type(Type, Scope) {return assert(0);};
+    Type determine_type(Scope context) => Type.int_word;
 
-    Type type;
-    Value evaluate(Scope context) {
-        if (type == Type.not_checked) {
-            type = determine_type();
+    private Type type = Type.unresolved;
+    Type get_type(Scope context) {
+        if (type == Type.unresolved) {
+            type = determine_type(context);
         }
-        return type.instance(representation.to!long);
+        return type;
+    }
+
+    Value evaluate(Scope context) {
+        // if (type == Type.unresolved) {
+        //     type = determine_type(context);
+        // }
+        return new Value_int_word(representation);
     }
 }
 
@@ -283,14 +317,22 @@ class Function_call : Expression {
         }
         ret.arguments = node.children[1].children
             .map!(a => Expression.from_pegged(a))
-            .array;
+            .array; 
         return ret;
     }
 
-    bool is_type() => assert(0, "not implemented");
+    // bool is_type() => assert(0, "not implemented");
+    
+    private Type type = Type.unresolved;
+    Type get_type(Scope context) {
+        if (type == Type.unresolved) {
+            type = determine_type(context);
+        }
+        return type;
+    }
 
-    string gen_c_expression() {
-        string callee_expr = callee.gen_c_expression;
+    string gen_c_expression(Scope context) {
+        string callee_expr = callee.gen_c_expression(context);
         if (cast(Value_name) callee is null) {
             callee_expr = "(" ~ callee_expr ~ ")";
         }
@@ -298,21 +340,47 @@ class Function_call : Expression {
         return format!"%s(%s)"(
             callee_expr,
             arguments
-                .map!(n=>n.gen_c_expression)
+                .map!(n=>n.gen_c_expression(context))
                 .joiner(", ")
                 .to!string
         );
     }
 
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.stand_in;};
+    bool check_type(Type, Scope) {return assert(0);};
+    Type determine_type(Scope context) {
+        Value_func callee_func = 
+            cast(Value_func) this.callee.evaluate(context);
+        assert(callee_func);
+        if (callee_func.arguments_out.length == 0) {
+            return Type.unit;
+        }
+        else if (callee_func.arguments_out.length == 1) {
+            Type ret_type = callee_func.arguments_out[0].type.type;
+            assert(ret_type != Type.any && ret_type != Type.unresolved);
+            return ret_type;
+        }
+        else {assert(0);}
+    };
+
+    Value evaluate(Scope context) {
+        Value_func callee_func = 
+            cast(Value_func) this.callee.evaluate(context);
+        assert(callee_func !is null);
+        Scope new_scope = context.spawn_nested(callee_func.block);
+        foreach (i, callee_arg; callee_func.arguments_in) {
+            new_scope.assign(
+                callee_arg.name, 
+                this.arguments[i].evaluate(context));
+        }
+        return callee_func.call(context);
+    }
 }
 
 class Compare : Expression {
-    static string[] compare_left  = ["!=", "=", ">", ">="];
-    static string[] compare_right = ["!=", "=", "<", "<="];
-    byte direction = 0; /// 0 =, 1 >, 2 <
-    byte[] operators;
+    enum Equalities : byte {not, equal, greater, greater_equal, less, less_equal}
+    static string[] glyphs = ["!=", "=", ">", ">=", "<", "<="];
+    // byte direction = 0; /// 0 =, 1 >, 2 <
+    Equalities[] operators;
     Expression[] items;
 
     static typeof(this) 
@@ -320,19 +388,19 @@ class Compare : Expression {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length % 2 == 1);
-
+        byte direction = 0;
         ret.items = [Expression.from_pegged(node.children[0])];
         int i = 1;
-        string[] glyphs = ["!=", "="];
+        // string[] glyphs = ["!=", "="];
         while (i < node.children.length) {
-            if (ret.direction == 0) {
+            if (direction == 0) {
                 if (node.children[i].matches[0][0] == '>')  {
-                    ret.direction = 1; 
-                    glyphs = ["!=" , "=", ">", ">="];
+                    direction = 1; 
+                    // glyphs = ["!=" , "=", ">", ">="];
                 }
                 else if (node.children[i].matches[0][0] == '<')  {
-                    ret.direction = 2;
-                    glyphs = ["!=" , "=", "<", "<="];
+                    direction = 2;
+                    // glyphs = ["!=" , "=", "<", "<="];
                 }
             }
             byte operator = cast(byte) glyphs.countUntil(
@@ -340,7 +408,7 @@ class Compare : Expression {
             );
             assert(operator != -1, 
                 format!"%s is not in %s"(node.children[i].matches[0],glyphs));
-            ret.operators ~= operator;
+            ret.operators ~= cast(Equalities)operator;
             i += 1;
             ret.items ~= Expression.from_pegged(node.children[i]);
             i += 1;
@@ -348,25 +416,66 @@ class Compare : Expression {
         return ret;
     }
 
-    bool is_type() => false;
+    // bool is_type() => false;
+    // private Type type = Type.unresolved;
+    Type get_type(Scope) => Type.boolean;
     
-    string gen_c_expression() {
-        if (items[0].type() == Type.type_t) {
-            return "comptime";
+    string gen_c_expression(Scope context) {
+        string[] c_glyphs = ["!=", "==", ">", ">=", "<", "<="];
+        if (items[0].get_type(context) == Type.type_type) {
+            return evaluate(context).gen_c_expression(context);
         } else {
             return 
-                roundRobin(
-                    items.map!(i=>i.gen_c_expression), 
-                    direction == 2? compare_left : compare_right
+                zip(
+                    items.map!(i=>i.gen_c_expression(context)).slide(2),
+                    operators.map!(op => c_glyphs[cast(ulong) op])
                 )
-                .joiner(" ")
+                .map!(tup => format!"(%s %s %s)"(tup[0][0], tup[1], tup[0][1]))
+                .joiner(" && ")
                 .to!string
             ;
         }
     }
 
-    bool check_type(Type type) => (type == Type.boolean);
-    Type determine_type() => Type.boolean;
+    bool check_type(Type type, Scope) => (type == Type.boolean);
+    Type determine_type(Scope) => Type.boolean;
+
+    Value evaluate(Scope context) {
+        Value initial = items[0].evaluate(context);
+        Type key_type = initial.get_type(context);
+        if (key_type == Type.int_word) {
+            long[] eval_list = [(cast(Value_int_word) 
+                items[0].evaluate(context)).value];
+            bool and_accum = false;
+            foreach (i, op; operators) {
+                eval_list ~= (
+                    cast(Value_int_word) 
+                    items[0].evaluate(context)
+                    ).value
+                ;
+
+                final switch (op) {
+                    case Equalities.not: 
+                        and_accum &= eval_list[i] != eval_list[i+1]; break;
+                    case Equalities.equal:
+                        and_accum &= eval_list[i] == eval_list[i+1]; break;
+                    case Equalities.greater:
+                        and_accum &= eval_list[i] >  eval_list[i+1]; break;
+                    case Equalities.greater_equal:
+                        and_accum &= eval_list[i] >= eval_list[i+1]; break;
+                    case Equalities.less:
+                        and_accum &= eval_list[i] <  eval_list[i+1]; break;
+                    case Equalities.less_equal:
+                        and_accum &= eval_list[i] <= eval_list[i+1]; break;
+                }
+            }
+            return new Value_bool(and_accum);
+        } else
+        if (key_type == Type.type_type) {
+            //...
+        }
+        throw new Error("We will get there when we get there.");
+    }
 }
 /+
 class Slice_type : Expression {
@@ -387,42 +496,43 @@ class Slice_type : Expression {
     }
     
     bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.stand_in;};
+    Type determine_type() {return Type.unresolved;};
 }
-
-class Annotation_of_type : Expression {
-    Expression type_given;
-    Expression value;
-    static typeof(this) 
-    from_pegged (ParseTree node) {
-        auto ret = new typeof(this);
-        validate_node!(typeof(this).stringof)(node);
-        assert(node.children.length == 2);
-        ret.type_given  = Expression.from_pegged(node.children[0]);
-        ret.value = Expression.from_pegged(node.children[1]);
-        return ret;
-    }
++/
+// class Annotation_of_type : Expression {
+//     Expression type_given;
+//     Expression value;
+//     static typeof(this) 
+//     from_pegged (ParseTree node) {
+//         auto ret = new typeof(this);
+//         validate_node!(typeof(this).stringof)(node);
+//         assert(node.children.length == 2);
+//         ret.type_given  = Expression.from_pegged(node.children[0]);
+//         ret.value = Expression.from_pegged(node.children[1]);
+//         return ret;
+//     }
     
-    bool is_type() => 0
-        || (
-            cast(Value_name)type !is null 
-            && (cast(Value_name) type).name == "Type"
-        )
-        || value.is_type
-    ;
+//     bool is_type() => 0
+//         || (
+//             cast(Value_name)type !is null 
+//             && (cast(Value_name) type).name == "Type"
+//         )
+//         || value.is_type
+//     ;
 
-    string gen_c_expression() => value.gen_c_expression();
+//     string gen_c_expression() => value.gen_c_expression();
     
-    bool check_type(Type) {
-        type_given.compute().as_type_t == Type.type_t;
-    };
-    Type determine_type() {
-        Type ret = type_given.compute().as_type_t;
-        enforce(value.check_type(ret));
-        return ret;
-    };
-}
-
+//     bool get_type(Type) {
+//         type_given.compute().as_type_t == Type.type_type;
+//     };
+//     Type determine_type() {
+//         Type ret = type_given.compute().as_type_t;
+//         if (value == )
+//         enforce(value.check_type(ret));
+//         return ret;
+//     };
+// }
+/+
 class Indexing : Expression {
     Expression indexee;
     Expression index;
@@ -444,7 +554,7 @@ class Indexing : Expression {
         format!"index(%s, %s)"(indexee, index);
     
     bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.stand_in;};
+    Type determine_type() {return Type.unresolved;};
 }
 
 class Sum_op : Expression {
@@ -478,11 +588,11 @@ class Sum_op : Expression {
     }
     
     bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.stand_in;};
+    Type determine_type() {return Type.unresolved;};
 }
 
 class Product_op : Expression {
-    Type type = Type.unresolved;
+    private Type type = Type.unresolved;
     Struct_field[] operands;
     static from_pegged(ParseTree node) {
         auto ret = new typeof(this);
@@ -520,7 +630,7 @@ class Product_op : Expression {
             if (auto val = cast(Expression) item) {
                 item_type = val.determine_type();
             } else if (cast(Declare_uninit) item) {
-                item_type = Type.type_t;
+                item_type = Type.type_type;
             } else {
                 assert(0);
             }
@@ -563,7 +673,7 @@ class Op_or : Expression {
     }
     
     bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.stand_in;};
+    Type determine_type() {return Type.unresolved;};
 }
 // +/
 
@@ -655,7 +765,7 @@ unittest {
     import std.exception: assertThrown, assertNotThrown;
     
     parse_code("
-        fun main (args : []String)() {
+        fun main (;args []String)() {
             ;my-var = do-stuff(
                 a, 1, 2 + (2 * 4)[11]
                 some-value
@@ -670,7 +780,10 @@ unittest {
     parse_code("
         ;foobar = Bool : T >= U
     ");
-
+    parse_code("
+        blah
+        (1,2,3)
+    ");
     assertThrown(parse_code("
         blah
         (1,2,3)

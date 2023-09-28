@@ -1,92 +1,136 @@
 module symbols;
 
 import typechecking;
+import nodes: Statement, Define_function, Define_variable, Module;
 import dynamic: Value;
+import internal_type: Type;
 
 import std.sumtype;
+import std.format;
 
 
-alias Symbol = SumType!(Variable_signature, Overload_set);
+// class Type_Type {}
 
 
-struct Overload_symbol {
-    string name;
-    Variable_symbol[] overloads;
+struct Symbol {
+    Overload[Type] overloads;
+}
+
+struct Overload {
+    Value value;
+
+    // Type type() {
+    //     return value.type;
+    // }
     string[] gen_c_declare();
 }
 
-struct Variable_symbol {
-    string name;
-    Expression value;
 
-    Type type() {
-        return value.type;
-    }
-    string[] gen_c_declare();
-}
-
-
-struct Scope {
+class Scope {
     import nodes;
+    Scope parent;
+    Statement[] statements;
     private Symbol[string] symbols;
-    private Statement[] statements;
+    string[][] forward_c_declarations;
 
-    void add(R)(R multiple_statements) {
-        foreach (Statement key; multiple_statements) {
-            statements ~= key;
+    this(Statement[] block, Scope new_parent) {
+        statements = block;
+        parent = new_parent;
+    }
+
+    Scope spawn_nested(Statement[] block) {
+        return new Scope(block, this);
+    }
+
+    // typeof(this) instance_function_block(Scope parent, Argument[] arguments) {
+    //     Scope ret = new Scope(block, this);
+        
+    //     // auto copy = new Scope(this);
+    //     // copy.statements = this.statements;
+    //     // copy.symbols.dup;
+    //     // return copy;
+    // }
+    
+    void add(string name, Value value) {
+        Type type = value.get_type(this);
+        if (name in symbols) {
+            if (type in symbols[name].overloads) {
+                throw new Error(
+                    format!"Symbol '%s' already defined with type %s"(
+                        name, type));
+            }
+            symbols[name].overloads[type] = Overload(value);
+        }
+        else {
+            symbols[name] = Symbol([type: Overload(value)]);
         }
     }
 
-    void add(Statement statement) {
-        if (auto fun = cast(Define_function) statement) {
-            symbols.require(fun.name, Symbol(Overload_symbol(fun.name)));
-            auto overload = Variable_symbol(fun);
-            symbols[fun.name].match!(
-                (ref Overload_symbol overloads) {
-                    assert(overload !in overloads);
-                    overloads[overload] = 0;
-                }
-                (Variable_symbol _) {assert(0);}
-            );
-        } else if (auto var = cast(Define_variable) statement) {
-            symbols.update(
-                var.name, 
-                throw new Error(format!"Symbol '%s' is already defined"(name)),
-                Variable_symbol(var.name, )
-            );
-        } else {
-            throw new Error(format!"Symbol '%s' could not be handled."(name));
+    void assign(string name, Value value) {
+        Type type = value.get_type(this);
+        if (name !in symbols) {
+            throw new Error(
+                format!"Symbol '%s' not defined!"(
+                    name));
         }
-        statements ~= statement;
+        else {
+            Symbol symbol = symbols[name];
+            if (symbol.overloads.length > 1) {
+                throw new Exception(
+                    "Updating overloaded symbols is not yet supported");
+            }
+            symbol.overloads[type] = value;
+        }
+    }
+    
+
+    Value fetch_value(string name, Type type) {
+        if (name !in symbols) {
+            if (parent) {
+                return parent.fetch_value(name, type);
+            }
+            else {
+                throw new Error(format!"Symbol '%s' not defined"(name));
+            }
+        }
+        Symbol symbol = symbols[name];
+        if (symbol.overloads.length > 1) {
+            throw new Error(
+                format!"Symbol '%s' is overloaded and needs to"
+                ~" be used with explicit typing."(name));
+        }
+        return symbol.overloads[type];
+    }
+
+    Type fetch_type(string name) {
+        if (name !in symbols) {
+            if (parent) {
+                return parent.fetch_type(name);
+            }
+            else {
+                throw new Error(format!"Symbol '%s' not defined"(name));
+            }
+        }
+        Symbol symbol = symbols[name];
+        if (symbol.overloads.length > 1) {
+            throw new Error(
+                format!"Symbol '%s' is overloaded and needs to"
+                ~" be used with explicit typing."(name));
+        }
+        symbol.overloads.keys()[0];
     }
 }
 
 // class Function_literal : Expression {
 // }
 
-Function_value get_func(Define_function def) {
-    auto ret = new Function_literal();
-    ret.arguments_in = def.arguments_in;
-    ret.arguments_out = def.arguments_out;
-    ret.block = def.block;
-}
+// Function_literal get_func(Define_function def) {
+//     auto ret = new Function_literal();
+//     ret.arguments_in = def.arguments_in;
+//     ret.arguments_out = def.arguments_out;
+//     ret.block = def.block;
+// }
 
-
-Value fetch_value(Scope context) {
-    Symbol entry = symbols.require(name,
-        throw new Error(format!"Symbol '%s' not defined"(name));
-    );
-    return entry.match!(
-        (Variable_symbol var) => var,
-        (Overload_symbol set) {
-            if (set.overloads.length > 1) {
-                throw new Error(
-                format!"Symbol '%s' is defined as a function"(name));
-            }
-            return set.overloads[0];
-        }
-    );
-}
 
 
 void add_initial_symbols(Module module_context) {

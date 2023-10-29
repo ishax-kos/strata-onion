@@ -1,6 +1,7 @@
 module internal_type;
 
 import dynamic: Value_func;
+import myunion;
 
 import std.typecons: tuple;
 import std.traits: getSymbolsByUDA, EnumMembers;
@@ -8,14 +9,11 @@ import std.meta;
 import std.algorithm: map;
 import std.array: array;
 import std.conv: to;
+import std.sumtype;
 
-struct byValuePointer(T) {
-    import core.memory: moveToGC;
-	T* address;
-    alias value this;
-    T value() => *address;
-    void value(T new_value) => address = moveToGC(new_value);
-}
+
+// Note about self referencing things: You cant initialize arrays;
+
 
 //+
 private
@@ -27,80 +25,92 @@ enum Discriminant {
     int_word,
     boolean,
     address,
-    func,
-    // slice,
+    slice,
     // structure,
     // sumtype,
     // c_union,
+    func,
 }// +/
 
 alias Variants = AliasSeq!(
     Type_unresolved, Type_any, Type_unit, Type_type, Type_int_word,
-    Type_boolean, Type_address, Type_func
+    Type_boolean, 
+    Type_address, 
+    Type_func, 
+    Type_slice
 );
 
 
-union Variant_union {
-    static foreach (i, Var; Variants ) {
-        static assert (EnumMembers!Discriminant[i] == Var.id);
-        static assert (Var.sizeof);
-        mixin(Var.stringof ~ " variant_" ~ Var.id.to!string ~ ";");
-    }
-    Var var(Var)() {
-        return mixin("variant_" ~ Var.id.to!string);
-    }
-    void var(Var)(Var value) {
-        value = mixin("variant_" ~ Var.id.to!string);
-    }
+static foreach(T; Variants) {
+    static assert(__traits(compiles, 
+        (){ string s = T().c_usage(); }()
+    ), T.stringof ~ " does not implement 'c_usage'");
 }
 
-// The internal (hashable) representation of type
+
+
 struct Type {
+    // The internal (hashable) representation of type
     import core.memory;
     bool is_const = true;
-    Discriminant discriminant = Discriminant.unresolved;
-    // Variant_union variant;
+    // Discriminant discriminant = Discriminant.unresolved;
+    SumType!Variants variant;
 
-    this(Discriminant d) {
-        discriminant = d;
-    }
 
-    static unresolved() => Type();
-    static unit() => Type(Discriminant.unit);
-    static any() => Type(Discriminant.any);
-    static int_word() => Type(Discriminant.int_word);
-    static type_type() => Type(Discriminant.type_type);
-    static boolean() => Type(Discriminant.boolean);
-    static address(Type base_type) {
-        Type t = Type(Discriminant.address);
-        // t.variant_address = Type_address(base_type);
-        return t;
-    }
-    static func(Value_func func) {
-        Type t = Type(Discriminant.func);
-        // t.variant_address = Type_func(base_type);
-        return t;
+    static create(T, A...)(A args) {
+        assert(staticIndexOf!(T, Variants) != -1);
+        auto ret = Type();
+        ret.variant = T(args);
+        return ret;
     }
     
-    string c_usage() => throw new Error("Hold your horses!");
+    string c_usage() {
+        return variant.match!(
+            (val) => val.c_usage()
+        );
+    }
+
+    extern (D) size_t toHash() const nothrow @safe {
+        return hashOf(variant);
+    }
+
+    bool opEquals(const Type other) const {
+        return variant.opEquals(other.variant);
+    }
+    bool opEquals(ref const Type other) const {
+        return variant.opEquals(other.variant);
+    }
 }
 
+
+
+Type type_unresolved() => Type.create!Type_unresolved();
+Type type_unit() => Type.create!Type_unit();
+Type type_any() => Type.create!Type_any();
+Type type_int_word() => Type.create!Type_int_word();
+Type type_type() => Type.create!Type_type();
+Type type_boolean() => Type.create!Type_boolean();
+Type type_address(Type base_type) => Type.create!Type_address(base_type);
+Type type_slice(Type base_type) => Type.create!Type_slice(base_type);
+Type type_func(Value_func func) => Type.create!Type_func(func);
 
 
 struct Type_type {
     enum id = Discriminant.type_type;
-    // override string c_usage() => throw new Exception(
-    //     "Type 'Type' cannot exit at runtime");
+    string c_usage() => throw new Exception(
+        "Type 'Type' cannot exit at C runtime");
     // mixin impl_aakeys;
 }
 
 struct Type_any {
     enum id = Discriminant.any;
     Type[] type_held;
+    string c_usage() => throw new Exception("Any");
 }
 
 struct Type_unit {
     enum id = Discriminant.unit;
+    string c_usage() => throw new Exception("Unit");
 }
 
 struct Type_unresolved {
@@ -123,8 +133,8 @@ struct Type_boolean {
 
 struct Type_address {
     enum id = Discriminant.address;
-    // string c_usage() => 
-    //     base_type.c_usage() ~ "*";
+    string c_usage() => 
+        base_type.c_usage() ~ "*";
         
     this(Type base_type) {
         this.base_type = base_type;
@@ -133,7 +143,7 @@ struct Type_address {
     void base_type(Type value) @property {_base_type = [value];}
     Type base_type() @property => _base_type[0];
 
-    private Type[] _base_type = [];
+    private Type[] _base_type;
 }
 
 struct Type_func {
@@ -150,7 +160,24 @@ struct Type_func {
         name = func.name;
     }
 }
-
 struct Argument_type {
     Type type;
 }
+
+
+struct Type_slice {
+    enum id = Discriminant.slice;
+    
+    
+    this(Type base_type) {
+        this.base_type = base_type;
+    }
+
+    void base_type(Type value) @property {_base_type = [value];}
+    Type base_type() @property => _base_type[0];
+
+    private Type[] _base_type;
+
+    string c_usage() => throw new Error("Holy trigger me Elmo, Batman!");
+}
+

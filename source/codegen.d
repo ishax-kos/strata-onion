@@ -41,7 +41,7 @@ string[] gen_c_scope(Scope scope_) {
 
 string gen_c_prototype(Define_function func) {
     return format!"%s %s(%s)"(
-        Type.unresolved, 
+        type_unresolved, 
         func.name.c_name, 
         func.arguments_in.map!(a => a.gen_c_parameter).joiner(", "),
         // func.arguments_out.map!gen_c_parameter 
@@ -58,16 +58,32 @@ string c_name(string name) {
 
 
 unittest {
+    import std.stdio;
     import nodes;
     import parse;
-    string c_code = "
-        ;foo-bar = Heck : me
-        fun main(bing : bong, flim: flam)() {
+    import pegged.grammar: ParseTree;
+
+    string strata_code = "
+        ;foo-bar = Int : me
+        fun main(;bing Int, ;flim Int)() {
             ;blah = 11
             blah = 22
         }
-    ".parse_code().generate();
+    ";
+    Scope global_scope = new Scope([], null);
+    global_scope.add_initial_symbols();
+    writeln("1");
+    ParseTree grammar_tree = Gram(strata_code);
+    assert(grammar_tree.successful, "grammar tree not successful");
+    writeln("2");
+    Module mod = Module.from_pegged(grammar_tree, global_scope);
+    assert(mod, "null module");
+    writeln("3");
+    string c_code = mod.generate();
+    assert(c_code, c_code);
+
     debug { import std.stdio : writeln; try { writeln(c_code); } catch (Exception) {} }
+
 }
 
 

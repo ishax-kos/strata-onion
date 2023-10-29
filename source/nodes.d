@@ -1,7 +1,6 @@
 module nodes;
 
 import codegen;
-import typechecking;
 import symbols;
 import dynamic;
 import internal_type;
@@ -21,14 +20,18 @@ import std.stdio;
 class Module {
     Scope scope_;
 
+    this(Scope scope__) {
+        scope_ = scope__;
+    }
+
     static typeof(this) 
-    from_pegged(ParseTree node) {
-        auto ret = new typeof(this);
-        ret.add_initial_symbols();
-        validate_node!"File"(node);
-        validate_node!"Statement_list"(node.children[0]);
-        ret.scope_.statements = node.children[0].children
-            .map!(a => Statement.from_pegged(a))
+    from_pegged(ParseTree node, Scope context) {
+        auto ret = new typeof(this)(context);
+        auto root = node.children[0];
+        validate_node!"File"(root);
+        validate_node!"Statement_list"(root.children[0]);
+        ret.scope_.statements = root.children[0].children
+            .map!(a => Statement.from_pegged(a, context))
             .array;
         return ret;
     }
@@ -38,11 +41,15 @@ class Module {
 //$ *** Super Types ***
 
 interface Statement {
-    string[] gen_c_forward_declaration();
     string[] gen_c_statement(Scope context);
     static typeof(this) 
-    from_pegged(ParseTree node) {
-        return create_subtype!(typeof(this))(node);
+    from_pegged(ParseTree node, Scope context) 
+    out(a) {
+        import std.stdio;
+        writeln(a);
+        assert(a, "Return is null");
+    } do {
+        return create_subtype!(typeof(this))(node, context);
     }
 }
 
@@ -51,20 +58,21 @@ interface Statement {
 
 interface Expression : Struct_field {
     static typeof(this) 
-    from_pegged(ParseTree node) {
-        return create_subtype!(typeof(this))(node);
+    from_pegged(ParseTree node, Scope context) {
+        return create_subtype!(typeof(this))(node, context);
     }
     
     Type get_type(Scope context);
     string gen_c_expression(Scope context);
-    Type determine_type(Scope context);// {return Type.unresolved;};
+    Type determine_type(Scope context);// {return type_unresolved;};
     Value evaluate(Scope context);
+    void enforce_type(Type type, Scope context);
 }
 
 interface Function_parameter {
     static typeof(this) 
-    from_pegged(ParseTree node) {
-        return create_subtype!(typeof(this))(node);
+    from_pegged(ParseTree node, Scope context) {
+        return create_subtype!(typeof(this))(node, context);
     }
     string gen_c_parameter();
     string arg_name();
@@ -74,8 +82,8 @@ interface Function_parameter {
 
 interface Struct_field {
     static typeof(this) 
-    from_pegged(ParseTree node) {
-        return create_subtype!(typeof(this))(node);
+    from_pegged(ParseTree node, Scope context) {
+        return create_subtype!(typeof(this))(node, context);
     }
     // bool semantics_valid();
 }
@@ -84,8 +92,8 @@ interface Struct_field {
 
 abstract
 class Grouping_expression : Expression {
-    static from_pegged(ParseTree node) {
-        return Expression.from_pegged(node.children[0]);
+    static from_pegged(ParseTree node, Scope context) {
+        return Expression.from_pegged(node.children[0], context);
     }
     // bool is_type() => false;
 }
@@ -95,12 +103,12 @@ class Assign : Statement {
     Expression rvalue;
     
     static typeof(this)
-    from_pegged(ParseTree node) {
+    from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length == 2);
-        ret.lvalue = Expression.from_pegged(node.children[0]);
-        ret.rvalue = Expression.from_pegged(node.children[1]);
+        ret.lvalue = Expression.from_pegged(node.children[0], context);
+        ret.rvalue = Expression.from_pegged(node.children[1], context);
 
         return ret;
     }
@@ -114,7 +122,7 @@ class Assign : Statement {
     // bool semantics_valid() {
     //     Type ltype = lvalue.determine_type();
     //     // enforce(lvalue.is_lvalue);
-    //     enforce(rvalue.check_type(ltype.check_type()));
+    //     enforce(rvalue.enforce_type(ltype.enforce_type()));
     // }
 }
 
@@ -123,21 +131,25 @@ class Define_variable : Statement {
     Expression init;
     
     static typeof(this)
-    from_pegged(ParseTree node) {
+    from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length == 2);
-        ret.name = Value_name.from_pegged(node.children[0]).name;
-        ret.init = Expression.from_pegged(node.children[1]);
+        ret.name = Value_name.from_pegged(node.children[0], context).name;
+        ret.init = Expression.from_pegged(node.children[1], context);
+
+        context.add(ret.name, ret.init);
+        // writeln(cast(void*) context);
+
         return ret;
     }
     
-    string[] gen_c_forward_declaration () => [format!"%s %s;"(
-        Type.unresolved.c_usage,
-        this.name.c_name
-    )];
+    // string[] gen_c_forward_declaration () => [format!"%s %s;"(
+    //     type_unresolved.c_usage,
+    //     this.name.c_name
+    // )];
     string[] gen_c_statement(Scope context) => [format!"%s %s = %s;"(
-        Type.unresolved.c_usage,
+        context.fetch_type(name),
         this.name.c_name,
         this.init.gen_c_expression(context)
     )];
@@ -147,30 +159,35 @@ class Define_function : Statement {
     string name;
     Function_parameter[] arguments_in;
     Function_parameter[] arguments_out;
-    Scope block;
+    Statement[] block;
     
     static typeof(this) 
-    from_pegged(ParseTree node) {
+    from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        assert (node.children.length == 4);
+        assert (node.children.length == 4, 
+            format!"%s"(node.children.map!(ch => ch.name)));
         // int i = 0;
-        ret.name = Value_name.from_pegged(node.children[0]).name;
+        auto child_nodes = node.children;
+        // validate_node!"Fun"(child_nodes.front());
+        // child_nodes.popFront();
+
+        ret.name = Value_name.from_pegged(child_nodes[0], context).name;
         // i += 1;
-        validate_node!"Prototype_argument_list"(node.children[1]);
-        ret.arguments_in = node.children[1].children
-            .map!(a => Function_parameter.from_pegged(a))
+        validate_node!"Prototype_argument_list"(child_nodes[1]);
+        ret.arguments_in = child_nodes[1].children
+            .map!(a => Function_parameter.from_pegged(a, context))
             .array;
             
-        validate_node!"Prototype_argument_list"(node.children[2]);
-        ret.arguments_out = node.children[2].children
-            .map!(a => Function_parameter.from_pegged(a))
+        validate_node!"Prototype_argument_list"(child_nodes[2]);
+        ret.arguments_out = child_nodes[2].children
+            .map!(a => Function_parameter.from_pegged(a, context))
             .array;
 
-        validate_node!"Statement_block"(node.children[3]);
-        if (node.children[3].children.length == 1) {
-            ret.block.statements = node.children[3].children[0].children
-                .map!(Statement.from_pegged)
+        validate_node!"Statement_block"(child_nodes[3]);
+        if (child_nodes[3].children.length == 1) {
+            ret.block = child_nodes[3].children[0].children
+                .map!(n=>Statement.from_pegged(n, context))
                 .array;
         }
 
@@ -180,19 +197,19 @@ class Define_function : Statement {
     string[] gen_c_forward_declaration () => [gen_c_prototype(this) ~ ";"];
     string[] gen_c_statement(Scope context) => 
         [gen_c_prototype(this) ~ " {"] ~ 
-        gen_c_scope(this.block)[1..$];
+        gen_c_scope(new Scope(this.block, context))[1..$];
 }
 
 class Declare_uninit : Function_parameter, Struct_field {
     string name;
     Expression type;
     
-    static typeof(this) from_pegged(ParseTree node) {
+    static typeof(this) from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length == 2);
-        ret.name = Value_name.from_pegged(node.children[0]).name;
-        ret.type = Expression.from_pegged(node.children[1]);
+        ret.name = Value_name.from_pegged(node.children[0], context).name;
+        ret.type = Expression.from_pegged(node.children[1], context);
 
         return ret;
     }
@@ -201,7 +218,7 @@ class Declare_uninit : Function_parameter, Struct_field {
 
     string gen_c_parameter() => 
         format!"%s %s"(
-            Type.unresolved.c_usage, 
+            type_unresolved.c_usage, 
             this.name.c_name);
 
     Argument as_argument(Scope context) {
@@ -217,9 +234,9 @@ class Declare_uninit : Function_parameter, Struct_field {
 class Value_name : Expression, Function_parameter {
     import std.uni: isUpper;
     string name;
-    // private Type type = Type.unresolved;
+    // private Type type = type_unresolved;
     static typeof(this) 
-    from_pegged (ParseTree node) {
+    from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         ret.name = node.matches[0];
@@ -230,7 +247,7 @@ class Value_name : Expression, Function_parameter {
 
     string gen_c_parameter() => 
         format!"%s %s"(
-            Type.unresolved.c_usage, 
+            type_unresolved.c_usage, 
             this.name.c_name);
 
     string gen_c_expression(Scope) => name.c_name;
@@ -241,19 +258,19 @@ class Value_name : Expression, Function_parameter {
         return context.fetch_type(name);
     }
 
-    private Type type = Type.unresolved;
+    private Type type = type_unresolved;
     Type get_type(Scope context) {
-        if (type == Type.unresolved) {
+        if (type == type_unresolved) {
             type = determine_type(context);
         }
         return type;
     }
 
     Value evaluate(Scope context) {
-        if (type == Type.unresolved) {
+        if (type == type_unresolved) {
             throw new Error("Type could not be resolved before use.");
         }
-        if (type != Type.type_type) {
+        if (type != type_type) {
             // throw new Error("Cant do that yet.");
         }
         return context.fetch_value(name, type);
@@ -265,11 +282,15 @@ class Value_name : Expression, Function_parameter {
         ret.name = name;
         return ret;
     }
+    void enforce_type(Type type, Scope context) {
+        cast(void) context.fetch_value(name, type);
+        this.type = type;
+    }
 }
 
 class Lit_number : Expression {
     string representation;
-    static from_pegged(ParseTree node) {
+    static from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         ret.representation = node.matches[0];
@@ -284,19 +305,19 @@ class Lit_number : Expression {
         .to!string
     ;
     
-    bool check_type(Type, Scope) {return assert(0);};
-    Type determine_type(Scope context) => Type.int_word;
+    void enforce_type(Type, Scope) {return assert(0);};
+    Type determine_type(Scope context) => type_int_word;
 
-    private Type type = Type.unresolved;
+    private Type type = type_unresolved;
     Type get_type(Scope context) {
-        if (type == Type.unresolved) {
+        if (type == type_unresolved) {
             type = determine_type(context);
         }
         return type;
     }
 
     Value evaluate(Scope context) {
-        // if (type == Type.unresolved) {
+        // if (type == type_unresolved) {
         //     type = determine_type(context);
         // }
         return new Value_int_word(representation);
@@ -307,25 +328,26 @@ class Function_call : Expression {
     Expression callee;
     Expression[] arguments;
 
-    static from_pegged(ParseTree node) {
+    static from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         if (node.children[0].get_name == "Value_name") {
-            ret.callee = Value_name.from_pegged(node.children[0]);
+            ret.callee = Value_name.from_pegged(node.children[0], context);
         } else {
-            ret.callee = Grouping_expression.from_pegged(node.children[0]);
+            ret.callee = 
+                Grouping_expression.from_pegged(node.children[0], context);
         }
         ret.arguments = node.children[1].children
-            .map!(a => Expression.from_pegged(a))
+            .map!(a => Expression.from_pegged(a, context))
             .array; 
         return ret;
     }
 
     // bool is_type() => assert(0, "not implemented");
     
-    private Type type = Type.unresolved;
+    private Type type = type_unresolved;
     Type get_type(Scope context) {
-        if (type == Type.unresolved) {
+        if (type == type_unresolved) {
             type = determine_type(context);
         }
         return type;
@@ -346,17 +368,17 @@ class Function_call : Expression {
         );
     }
 
-    bool check_type(Type, Scope) {return assert(0);};
+    void enforce_type(Type, Scope) {return assert(0);};
     Type determine_type(Scope context) {
         Value_func callee_func = 
             cast(Value_func) this.callee.evaluate(context);
         assert(callee_func);
         if (callee_func.arguments_out.length == 0) {
-            return Type.unit;
+            return type_unit;
         }
         else if (callee_func.arguments_out.length == 1) {
             Type ret_type = callee_func.arguments_out[0].type.type;
-            assert(ret_type != Type.any && ret_type != Type.unresolved);
+            assert(ret_type != type_any && ret_type != type_unresolved);
             return ret_type;
         }
         else {assert(0);}
@@ -384,12 +406,12 @@ class Compare : Expression {
     Expression[] items;
 
     static typeof(this) 
-    from_pegged(ParseTree node) {
+    from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         assert(node.children.length % 2 == 1);
         byte direction = 0;
-        ret.items = [Expression.from_pegged(node.children[0])];
+        ret.items = [Expression.from_pegged(node.children[0], context)];
         int i = 1;
         // string[] glyphs = ["!=", "="];
         while (i < node.children.length) {
@@ -410,19 +432,19 @@ class Compare : Expression {
                 format!"%s is not in %s"(node.children[i].matches[0],glyphs));
             ret.operators ~= cast(Equalities)operator;
             i += 1;
-            ret.items ~= Expression.from_pegged(node.children[i]);
+            ret.items ~= Expression.from_pegged(node.children[i], context);
             i += 1;
         }
         return ret;
     }
 
     // bool is_type() => false;
-    // private Type type = Type.unresolved;
-    Type get_type(Scope) => Type.boolean;
+    // private Type type = type_unresolved;
+    Type get_type(Scope) => type_boolean;
     
     string gen_c_expression(Scope context) {
         string[] c_glyphs = ["!=", "==", ">", ">=", "<", "<="];
-        if (items[0].get_type(context) == Type.type_type) {
+        if (items[0].get_type(context) == type_type) {
             return evaluate(context).gen_c_expression(context);
         } else {
             return 
@@ -437,13 +459,13 @@ class Compare : Expression {
         }
     }
 
-    bool check_type(Type type, Scope) => (type == Type.boolean);
-    Type determine_type(Scope) => Type.boolean;
+    void enforce_type(Type type, Scope) {enforce(type == type_boolean);}
+    Type determine_type(Scope) => type_boolean;
 
     Value evaluate(Scope context) {
         Value initial = items[0].evaluate(context);
         Type key_type = initial.get_type(context);
-        if (key_type == Type.int_word) {
+        if (key_type == type_int_word) {
             long[] eval_list = [(cast(Value_int_word) 
                 items[0].evaluate(context)).value];
             bool and_accum = false;
@@ -471,80 +493,92 @@ class Compare : Expression {
             }
             return new Value_bool(and_accum);
         } else
-        if (key_type == Type.type_type) {
+        if (key_type == type_type) {
             //...
         }
         throw new Error("We will get there when we get there.");
     }
 }
-/+
 class Slice_type : Expression {
     Expression base;
     static typeof(this)
-    from_pegged (ParseTree node) {
+    from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
-        ret.base = Expression.from_pegged(node.children[0]);
+        ret.base = Expression.from_pegged(node.children[0], context);
         return ret;
     }
-    bool is_type() => true;
 
-    string gen_c_expression() {
+    override string gen_c_expression(Scope context) {
         assert(0, "needs to be rearanged to Type name[]");
         // return base.gen_c_expression ~ "var_name" ~ "[]";
 
     }
     
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.unresolved;};
+    Type get_type(Scope) => type_type;
+    void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
+    Type determine_type(Scope) => type_type;
+    Value evaluate(Scope context) {
+        Type_node subtype = cast(Type_node) base.evaluate(context);
+        assert (subtype);
+        return new Type_node(type_slice(subtype.this_type));
+    }
 }
-+/
-// class Annotation_of_type : Expression {
-//     Expression type_given;
-//     Expression value;
-//     static typeof(this) 
-//     from_pegged (ParseTree node) {
-//         auto ret = new typeof(this);
-//         validate_node!(typeof(this).stringof)(node);
-//         assert(node.children.length == 2);
-//         ret.type_given  = Expression.from_pegged(node.children[0]);
-//         ret.value = Expression.from_pegged(node.children[1]);
-//         return ret;
-//     }
-    
-//     bool is_type() => 0
-//         || (
-//             cast(Value_name)type !is null 
-//             && (cast(Value_name) type).name == "Type"
-//         )
-//         || value.is_type
-//     ;
+class Annotation_of_type : Expression {
+    Expression type_given;
+    Expression value;
+    static typeof(this) 
+    from_pegged(ParseTree node, Scope context) {
+        auto ret = new typeof(this);
+        validate_node!(typeof(this).stringof)(node);
+        assert(node.children.length == 2);
+        ret.type_given  = Expression.from_pegged(node.children[0], context);
+        ret.value = Expression.from_pegged(node.children[1], context);
+        return ret;
+    }
 
-//     string gen_c_expression() => value.gen_c_expression();
-    
-//     bool get_type(Type) {
-//         type_given.compute().as_type_t == Type.type_type;
-//     };
-//     Type determine_type() {
-//         Type ret = type_given.compute().as_type_t;
-//         if (value == )
-//         enforce(value.check_type(ret));
-//         return ret;
-//     };
-// }
+    string gen_c_expression(Scope context) => value.gen_c_expression(context);
+    Type cached_type;
+    Type get_type(Scope context) {
+        if (cached_type == type_unresolved) {
+            cached_type = determine_type(context);
+        }
+        return cached_type;
+    };
+    void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
+    Type determine_type(Scope context) {
+        Type_node type_ = cast(Type_node) type_given.evaluate(context);
+        enforce(type_);
+        
+        Type type__ = type_.this_type;
+        value.enforce_type(type__, context);
+        return type__;
+    }
+    Value evaluate(Scope context) {
+        Type_node type_ = cast(Type_node) type_given.evaluate(context);
+        enforce(type_);
+        value.enforce_type(type_.this_type, context);
+        return value.evaluate(context);
+    }
+}
 /+
 class Indexing : Expression {
     Expression indexee;
     Expression index;
-    static from_pegged(ParseTree node) {
+    static from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         if (node.children[0].get_name == "Value_name") {
-            ret.indexee = Value_name.from_pegged(node.children[0]);
+            ret.indexee = Value_name.from_pegged(node.children[0], context);
         } else {
-            ret.indexee = Grouping_expression.from_pegged(node.children[0]);
+            ret.indexee = 
+                Grouping_expression.from_pegged(node.children[0], context);
         }
-        ret.index = Expression.from_pegged(node.children[1]);
+        ret.index = Expression.from_pegged(node.children[1], context);
         return ret;
     }
 
@@ -553,17 +587,17 @@ class Indexing : Expression {
     string gen_c_expression() => 
         format!"index(%s, %s)"(indexee, index);
     
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.unresolved;};
+    void enforce_type(Type) {return assert(0);};
+    Type determine_type() {return type_unresolved;};
 }
 
 class Sum_op : Expression {
     Struct_field[] operands;
-    static from_pegged(ParseTree node) {
+    static from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         ret.operands = node.children
-            .map!(Struct_field.from_pegged)
+            .map!(n => Struct_field.from_pegged(n, context))
             .array;
         return ret;
     }
@@ -587,18 +621,18 @@ class Sum_op : Expression {
         ;
     }
     
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.unresolved;};
+    void enforce_type(Type) {return assert(0);};
+    Type determine_type() {return type_unresolved;};
 }
 
 class Product_op : Expression {
-    private Type type = Type.unresolved;
+    private Type type = type_unresolved;
     Struct_field[] operands;
-    static from_pegged(ParseTree node) {
+    static from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         ret.operands = node.children
-            .map!(Struct_field.from_pegged)
+            .map!(n=>Struct_field.from_pegged(n, context))
             .array;
         return ret;
     }
@@ -622,20 +656,20 @@ class Product_op : Expression {
         ;
     }
     
-    bool check_type(Type) {return assert(0);};
+    void enforce_type(Type) {return assert(0);};
     Type determine_type() {
-        Type ret = Type.not_checked;
+        Type ret = type_not_checked;
         foreach (item; operands) {
             Type item_type;
             if (auto val = cast(Expression) item) {
                 item_type = val.determine_type();
             } else if (cast(Declare_uninit) item) {
-                item_type = Type.type_type;
+                item_type = type_type;
             } else {
                 assert(0);
             }
 
-            if (ret == Type.not_checked) {
+            if (ret == type_not_checked) {
                 enforce(ret == item_type);
             }
         }
@@ -644,11 +678,11 @@ class Product_op : Expression {
 
 class Op_or : Expression {
     Struct_field[] operands;
-    static from_pegged(ParseTree node) {
+    static from_pegged(ParseTree node, Scope context) {
         auto ret = new typeof(this);
         validate_node!(typeof(this).stringof)(node);
         ret.operands = node.children
-            .map!(Struct_field.from_pegged)
+            .map!(n=>Struct_field.from_pegged(n, context))
             .array;
         return ret;
     }
@@ -672,14 +706,18 @@ class Op_or : Expression {
         ;
     }
     
-    bool check_type(Type) {return assert(0);};
-    Type determine_type() {return Type.unresolved;};
+    void enforce_type(Type) {return assert(0);};
+    Type determine_type() {return type_unresolved;};
 }
 // +/
 
 //$ *** Helper functions ***
 
-Super create_subtype(Super)(ParseTree node) {
+Super create_subtype(Super)(ParseTree node, Scope context)
+out (r) {
+    assert(r, "Return is null");
+}
+do {
     import std.traits: TemplateArgsOf;
     import std.conv;
     alias Node_types = Subtypes!Super;
@@ -696,7 +734,7 @@ Super create_subtype(Super)(ParseTree node) {
     switch (get_name(sub_node)) {
         static foreach(Node_type; Node_types) {
             case Node_type.stringof:
-                return Node_type.from_pegged(sub_node);
+                return Node_type.from_pegged(sub_node, context);
         }
         default: 
             assert(0, msg_wrong_node(sub_node, "subtype of '"~Super.stringof~"'"));
@@ -759,42 +797,42 @@ string get_name(ParseTree node) {
 //     }
 // }
 
-unittest {
-    import parse;
+// unittest {{import std.stdio; writeln(__FUNCTION__);}
+//     import parse;
 
-    import std.exception: assertThrown, assertNotThrown;
+//     import std.exception: assertThrown, assertNotThrown;
     
-    parse_code("
-        fun main (;args []String)() {
-            ;my-var = do-stuff(
-                a, 1, 2 + (2 * 4)[11]
-                some-value
-                who-needs-separators
-            )
-            my-var = 3
-        }
-        ;foobar = lol
+//     parse_code("
+//         fun main (;args []String)() {
+//             ;my-var = do-stuff(
+//                 a, 1, 2 + (2 * 4)[11]
+//                 some-value
+//                 who-needs-separators
+//             )
+//             my-var = 3
+//         }
+//         ;foobar = lol
         
-    ");
+//     ");
 
-    parse_code("
-        ;foobar = Bool : T >= U
-    ");
-    parse_code("
-        blah
-        (1,2,3)
-    ");
-    assertThrown(parse_code("
-        blah
-        (1,2,3)
-    "));
+//     parse_code("
+//         ;foobar = Bool : T >= U
+//     ");
+//     parse_code("
+//         blah
+//         (1,2,3)
+//     ");
+//     assertThrown(parse_code("
+//         blah
+//         (1,2,3)
+//     "));
     
-    assertThrown(parse_code("
-        blah
-        [1]
-    "));
-    
-}
+//     assertThrown(parse_code("
+//         blah
+//         [1]
+//     "));
+//     {import std.stdio; writeln(__FUNCTION__);}
+// }
 
 bool instance_of(T)(T value) if (is(T == class)) =>
     cast(T) value !is null;

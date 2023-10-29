@@ -8,8 +8,7 @@ import std.algorithm: map;
 import std.array: array;
 import std.conv: to;
 import std.format;
-
-
+import std.exception: enforce;
 
 interface Value : Expression {
     /// Class for values that have been resolved
@@ -18,11 +17,14 @@ interface Value : Expression {
 // Type as a value
 class Type_node: Value {
     Type this_type;
-    
-    override Type get_type(Scope context) => Type.type_type;
+    this (Type t) {this_type = t;}
+    override Type get_type(Scope context) => type_type;
     override string gen_c_expression(Scope context) => "Type_stand_in";
-    override Type determine_type(Scope context) => Type.type_type;
+    override Type determine_type(Scope context) => type_type;
     override Value evaluate(Scope context) => this;
+    override void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
 }
 
 struct Argument {
@@ -58,23 +60,28 @@ class Value_func: Value {
     }
 
     override Type get_type(Scope context) {
-        return Type.func(this);
+        return type_func(this);
     }
     override string gen_c_expression(Scope context) => throw new Error("Not yet implemented. Needs to spit out a generated function name.");
-    override Type determine_type(Scope context) => Type.func(this);
+    override Type determine_type(Scope context) => type_func(this);
     override Value evaluate(Scope context) => this;
+    override void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
     Value call(Scope context) => throw new Error("OwO");
 }
-
 
 class Value_int_word : Value {
     long value;
     this(string val) {value = val.to!long;}
     
-    override Type get_type(Scope context) => Type.int_word;
+    override Type get_type(Scope context) => type_int_word;
     override string gen_c_expression(Scope context) => value.to!string;
-    override Type determine_type(Scope context) => Type.int_word;
+    override Type determine_type(Scope context) => type_int_word;
     override Value evaluate(Scope context) => this;
+    override void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
 }
 
 class Value_bool : Value {
@@ -91,14 +98,28 @@ class Value_bool : Value {
     }
     this(bool val) {value = val;}
     
-    override Type get_type(Scope context) => Type.boolean;
+    override Type get_type(Scope context) => type_boolean;
     override string gen_c_expression(Scope context) => 
         (cast(int) value).to!string;
-    override Type determine_type(Scope context) => Type.boolean;
+    override Type determine_type(Scope context) => type_boolean;
     override Value evaluate(Scope context) => this;
+    override void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
+}
+
+class Value_unit : Value {
+    override Type get_type(Scope context) => type_unit;
+    override string gen_c_expression(Scope context) => 
+        throw new Error("C can't handle unit types!");
+    override Type determine_type(Scope context) => type_unit;
+    override Value evaluate(Scope context) => this;
+    override void enforce_type(Type type, Scope context) {
+        enforce(type == get_type(context));
+    }
 }
 // class Address_value : Value {
-//     Type type = Type.address(Type.unresolved);
+//     Type type = type_address(type_unresolved);
 //     void* value;
 // }
 

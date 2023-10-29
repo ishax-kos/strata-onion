@@ -1,9 +1,9 @@
 module symbols;
 
-import typechecking;
+
 import nodes: Statement, Define_function, Define_variable, Module;
 import dynamic: Value;
-import internal_type: Type;
+import internal_type;
 
 import std.sumtype;
 import std.format;
@@ -17,16 +17,11 @@ struct Symbol {
 }
 
 struct Overload {
-    Value value;
-
-    // Type type() {
-    //     return value.type;
-    // }
-    string[] gen_c_declare();
+    Type value;
 }
 
 
-class Scope {
+class Scope: Statement {
     import nodes;
     Scope parent;
     Statement[] statements;
@@ -65,6 +60,20 @@ class Scope {
             symbols[name] = Symbol([type: Overload(value)]);
         }
     }
+    
+    void add(string name, Type type) {
+        if (name in symbols) {
+            if (type in symbols[name].overloads) {
+                throw new Error(
+                    format!"Symbol '%s' already defined with type %s"(
+                        name, type));
+            } 
+            symbols[name].overloads[type] = Overload(value);
+        }
+        else {
+            symbols[name] = Symbol([type: Overload(value)]);
+        }
+    }
 
     void assign(string name, Value value) {
         Type type = value.get_type(this);
@@ -79,7 +88,7 @@ class Scope {
                 throw new Exception(
                     "Updating overloaded symbols is not yet supported");
             }
-            symbol.overloads[type] = value;
+            symbol.overloads[type].value = value;
         }
     }
     
@@ -96,10 +105,10 @@ class Scope {
         Symbol symbol = symbols[name];
         if (symbol.overloads.length > 1) {
             throw new Error(
-                format!"Symbol '%s' is overloaded and needs to"
-                ~" be used with explicit typing."(name));
+                format!("Symbol '%s' is overloaded and needs to"
+                ~" be used with explicit typing.")(name));
         }
-        return symbol.overloads[type];
+        return symbol.overloads[type].value;
     }
 
     Type fetch_type(string name) {
@@ -114,10 +123,35 @@ class Scope {
         Symbol symbol = symbols[name];
         if (symbol.overloads.length > 1) {
             throw new Error(
-                format!"Symbol '%s' is overloaded and needs to"
-                ~" be used with explicit typing."(name));
+                format!("Symbol '%s' is overloaded and needs to"
+                ~" be used with explicit typing.")(name));
         }
-        symbol.overloads.keys()[0];
+        return symbol.overloads.keys()[0];
+    }
+
+    string[] gen_c_statement(Scope context) {
+        import codegen;
+        import std.algorithm: map, joiner;
+
+        assert(context == parent);
+        string[] pre_declare = [];
+        foreach (name, symbol; symbols) {
+            if (symbol.overloads.length == 1) {
+                Type t = fetch_type(name);
+                pre_declare ~= format!"%s %s;"(t.c_usage, name);
+            }
+            string type_suffix;
+            foreach (overload_type, _o; symbol.overloads) {
+                pre_declare ~= format!"%s %s_%s;"(
+                    overload_type.c_usage, name, overload_type.c_usage);
+            }
+        }
+        return pre_declare ~
+        lines(
+            "{",
+                statements.map!(n => n.gen_c_statement(this)).joiner(),
+            "}"
+        );
     }
 }
 
@@ -133,11 +167,12 @@ class Scope {
 
 
 
-void add_initial_symbols(Module module_context) {
-    auto symbols = module_context.scope_.symbols;
-    symbols["Int"] ~= Variable_signature("Int", Type.int_word);
-    symbols["Void"] ~= Variable_signature("Void", Type.unit);
-    symbols["void"] ~= Variable_signature("void", Value_void());
+void add_initial_symbols(Scope global_context) {
+    import dynamic;
+
+    global_context.add("Int", new Type_node(type_int_word));
+    global_context.add("Void", new Type_node(type_unit));
+    global_context.add("void", new Value_unit());
 }
 
 

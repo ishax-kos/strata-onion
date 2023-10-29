@@ -46,9 +46,9 @@ Gram:
 ## Declarations
     Var < ';'
     Fun < 'fun'
-    Define_variable < Var br Value_name br '=' br Expression
+    Define_variable < :Var br Value_name br '=' br Expression
     Define_function <
-        / Fun 
+        / :Fun 
             br Value_name 
             br Prototype_argument_list 
             br Prototype_argument_list
@@ -58,10 +58,10 @@ Gram:
         / '(' "" br ')'
         / '(' br Function_parameter (Separator Function_parameter)* br ')'
 
-    Function_parameter < Declare_uninit / Parameter_init / Value_name
+    Function_parameter < Declare_uninit / Parameter_init / :Var br Value_name
 
-    Declare_uninit < Var br Value_name br Expression
-    Parameter_init < Var br Value_name br '=' br Expression
+    Declare_uninit < :Var br Value_name br Expression
+    Parameter_init < :Var br Value_name br '=' br Expression
 
     Statement_block < '{' br (Statement_list br)? '}'
     Value_scope < '{' br (Expression br)? '}'
